@@ -1,5 +1,7 @@
 # 🍃 澜山 — 学习时长统计工具
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 Windows 桌面学习伴侣，后台默默记录学习时长，打开就是漂亮的统计面板。
 
 ## ✨ 功能
