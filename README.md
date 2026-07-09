@@ -1,6 +1,6 @@
 # 🍃 澜山 — 学习时长统计工具
 
-[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC_BY--NC--SA_4.0-lightgrey.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Windows 桌面学习伴侣，后台默默记录学习时长，打开就是漂亮的统计面板。
 
@@ -120,4 +120,4 @@ ActivityWatch（localhost:5600）
 
 ## 📄 许可证
 
-[CC BY-NC-SA 4.0](LICENSE) — 仅限个人非商业用途。
+[MIT](LICENSE)
