@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+/* ─── Light theme (default) ─── */
+:root {
+  --bg-primary: #f1f5f9;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --bg-elevated: #ffffff;
+  --border: #e2e8f0;
+  --border-light: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --accent: #059669;
+  --accent-bg: rgba(5, 150, 105, 0.08);
+  --progress-track: #e5e7eb;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --card-border: transparent;
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-thumb-hover: #94a3b8;
+  --grid-empty: rgba(0,0,0,0.06);
+  --heatmap-0: #e5e7eb;
+  --heatmap-1: #86efac;
+  --heatmap-2: #16a34a;
+}
+
+/* ─── Dark theme ─── */
+:root.dark {
+  --bg-primary: #090d18;
+  --bg-card: #111827;
+  --bg-card-hover: #1a2336;
+  --bg-elevated: #090d18;
+  --border: #1e2d45;
+  --border-light: #2a3d5a;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent: #10b981;
+  --accent-bg: rgba(16, 185, 129, 0.10);
+  --progress-track: #374151;
+  --shadow: 0 1px 3px rgba(0,0,0,0.4);
+  --card-border: transparent;
+  --scrollbar-thumb: #1e2d45;
+  --scrollbar-thumb-hover: #2a3d5a;
+  --grid-empty: rgba(255,255,255,0.08);
+  --heatmap-0: #1e293b;
+  --heatmap-1: #047857;
+  --heatmap-2: #34d399;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* Tabular numbers for duration display */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Card utility ─── */
+.card {
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.card:hover {
+  border-color: var(--border-light);
+}
+
+/* ─── Encouragement ─── */
+.encouragement {
+  text-align: center;
+  padding: 12px 20px;
+  background: var(--accent-bg);
+  border-radius: 12px;
+  font-size: 15px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+/* ─── Toggle switch ─── */
+.toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 40px;
+  height: 22px;
+  border-radius: 9999px;
+  background: var(--border-light);
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggle.active {
+  background: var(--accent);
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.2s;
+}
+
+.toggle.active::after {
+  transform: translateX(18px);
+}
