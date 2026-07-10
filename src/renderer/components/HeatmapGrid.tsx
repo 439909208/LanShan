@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { formatShortDuration, getSubjectIcon } from '../utils'
+import { formatShortDuration, getSubjectIcon, getSubjectColor } from '../utils'
 
 const DOW = ['一', '二', '三', '四', '五', '六', '日']
 const GAP = 3
@@ -208,22 +208,48 @@ export default function HeatmapGrid(): React.ReactElement {
 }
 
 function DayTimelineModal({ date, onClose }: { date: string; onClose: () => void }) {
-  const [groups, setGroups] = useState<{ subject: string; title: string; duration: number }[]>([])
-  useEffect(() => {
-    window.lanshan.getMergedSegments(date).then((segs: any[]) => {
-      const map = new Map<string, { subject: string; title: string; duration: number }>()
-      for (const seg of segs) {
-        if (seg.is_exploded) continue
-        const key = seg.subject + '||' + (seg.title || seg.app)
-        const cur = map.get(key)
-        if (cur) { cur.duration += seg.duration }
-        else { map.set(key, { subject: seg.subject, title: seg.title || seg.app, duration: seg.duration }) }
-      }
-      setGroups(Array.from(map.values()).sort((a, b) => b.duration - a.duration))
-    })
-  }, [date])
+  const [groups, setGroups] = useState<{ title: string; duration: number; subjects: string[] }[]>([])
+  const [classifyTitle, setClassifyTitle] = useState<string | null>(null)
+  const [addRule, setAddRule] = useState(false)
 
+  async function loadGroups() {
+    const segs: any[] = await window.lanshan.getMergedSegments(date)
+    const map = new Map<string, { title: string; duration: number; subjects: Set<string> }>()
+    for (const seg of segs) {
+      if (seg.is_exploded) continue
+      const key = seg.title || seg.app
+      const cur = map.get(key)
+      if (cur) {
+        cur.duration += seg.duration
+        cur.subjects.add(seg.subject)
+      } else {
+        map.set(key, { title: key, duration: seg.duration, subjects: new Set([seg.subject]) })
+      }
+    }
+    setGroups(Array.from(map.values())
+      .map(g => ({ ...g, subjects: Array.from(g.subjects) }))
+      .sort((a, b) => b.duration - a.duration))
+  }
+
+  useEffect(() => { loadGroups() }, [date])
+
+  async function handleReclassifyByTitle(title: string, newSubject: string) {
+    await window.lanshan.reclassifyByTitle(date, title, newSubject)
+    if (addRule) {
+      await window.lanshan.addClassificationRule(newSubject, title, 'title', 5)
+    }
+    await loadGroups()
+    setClassifyTitle(null)
+    setAddRule(false)
+  }
+
+  const classifySubjects = ['物理', '数学', '英语', '化学', '生物', '语文', '休闲', '其他']
   const totalSec = groups.reduce((s, g) => s + g.duration, 0)
+  const secondaryColor = 'var(--text-secondary)'
+  const textColor = 'var(--text-primary)'
+  const cardBg = 'var(--bg-card)'
+  const borderLight = 'var(--border-light)'
+
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
@@ -239,14 +265,55 @@ function DayTimelineModal({ date, onClose }: { date: string; onClose: () => void
         ) : (
           <div className="space-y-1.5">
             {groups.map((g, i) => (
-              <div key={i} className="flex items-center gap-3 py-2 px-3 rounded-lg" style={{background:'var(--bg-elevated)'}}>
-                <span className="text-base flex-shrink-0">{getSubjectIcon(g.subject)}</span>
+              <div key={i} className="flex items-center gap-2 py-2 px-3 rounded-lg" style={{background:'var(--bg-elevated)'}}>
                 <span className="text-xs font-medium tabular-nums w-14 flex-shrink-0">{formatShortDuration(g.duration)}</span>
-                <span className="text-xs font-medium w-10 flex-shrink-0" style={{color: 'var(--accent)'}}>{g.subject}</span>
-                <span className="text-xs truncate" style={{color:'var(--text-secondary)'}}>{g.title}</span>
+                <span className="text-xs truncate flex-1" style={{color:'var(--text-secondary)'}}>{g.title}</span>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {g.subjects.map(s => (
+                    <button
+                      key={s}
+                      onClick={(e) => { e.stopPropagation(); setClassifyTitle(classifyTitle === g.title ? null : g.title) }}
+                      className="text-xs px-2 py-0.5 rounded-full font-medium transition-opacity hover:opacity-80"
+                      style={{ background: getSubjectColor(s) + '22', color: getSubjectColor(s) }}
+                    >
+                      {getSubjectIcon(s)} {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
+        )}
+
+        {/* Classification popup for title */}
+        {classifyTitle && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => { setClassifyTitle(null); setAddRule(false) }} />
+            <div className="fixed z-50 rounded-xl p-3 shadow-xl"
+              style={{ left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+                       background: cardBg, border: `1px solid ${borderLight}`, minWidth: 220 }}
+            >
+              <p className="text-sm px-2 pt-1 pb-2" style={{ color: secondaryColor }}>
+                将「{classifyTitle}」标记为：
+              </p>
+              {classifySubjects.map(s => (
+                <button key={s} onClick={() => handleReclassifyByTitle(classifyTitle!, s)}
+                  className="w-full text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center gap-2"
+                  style={{ color: textColor }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = borderLight }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                  <span>{getSubjectIcon(s)}</span> {s}
+                </button>
+              ))}
+              <label className="flex items-center gap-2 px-3 py-2 text-xs" style={{ color: secondaryColor }}>
+                <input type="checkbox" checked={addRule} onChange={e => setAddRule(e.target.checked)} />
+                同时保存为分类规则（后续同名标题自动分类）
+              </label>
+              <button onClick={() => { setClassifyTitle(null); setAddRule(false) }}
+                className="w-full text-left px-3 py-2 rounded-lg text-sm transition-all mt-1 pt-2"
+                style={{ color: secondaryColor, borderTop: `1px solid ${borderLight}` }}>取消</button>
+            </div>
+          </>
         )}
       </div>
     </>

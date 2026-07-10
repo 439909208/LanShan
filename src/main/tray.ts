@@ -37,9 +37,11 @@ function createColoredIcon(color: string): nativeImage {
 
       if (dist <= radius) {
         // Leaf shape approximation: a simple circle
-        buffer[idx] = r
-        buffer[idx + 1] = g
-        buffer[idx + 2] = b
+        // nativeImage.createFromBuffer on Windows interprets raw data as BGRA,
+        // so we store B,G,R,A instead of R,G,B,A to compensate
+        buffer[idx] = b    // Blue (will be read as Red by Electron)
+        buffer[idx + 1] = g  // Green (stays)
+        buffer[idx + 2] = r  // Red (will be read as Blue by Electron)
         buffer[idx + 3] = 255
       } else {
         buffer[idx] = 0
@@ -102,7 +104,7 @@ function updateTrayMenu(): void {
 
   // "Unset" option
   menuItems.push({
-    label: currentSubject === null ? '✓ ❓ 不指定' : '❓ 不指定',
+    label: currentSubject === null ? '✓ 📋 不指定' : '📋 不指定',
     click: () => {
       setTraySubject(null)
       updateTrayMenu()

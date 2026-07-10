@@ -21,7 +21,7 @@ let syncInterval: ReturnType<typeof setInterval> | null = null
 
 const SYNC_INTERVAL_MS = 30_000  // every 30 seconds
 const MERGE_GAP_SECONDS = 300      // 5 minutes — same-subject events within this gap merge into one segment
-const NOISE_THRESHOLD_SECONDS = 30 // skip events shorter than 30s
+const NOISE_THRESHOLD_SECONDS = 0 // don't drop anything — keep all AW data
 const GAP_SECONDS = 300            // 5 min gap = blank space
 const INTERLUDE_THRESHOLD = 300    // 5 min non-study = interlude
 
@@ -67,12 +67,37 @@ export async function syncActivityWatch(): Promise<void> {
   const end = now.toISOString()
 
   const events = await fetchEventsSince(start, end)
-  if (events.length === 0) return
+  if (events.length === 0) { console.log('[sync] No events from AW in last 2h'); return }
+
+  // Diagnostic: log AW data coverage
+  if (events.length > 0) {
+    const first = new Date(events[0].timestamp)
+    const last = new Date(events[events.length - 1].timestamp)
+    console.log('[sync] AW returned', events.length, 'events, span:', first.toLocaleTimeString('zh-CN', {hour12:false}),
+      '→', last.toLocaleTimeString('zh-CN', {hour12:false}),
+      '(', Math.round((last.getTime() - first.getTime()) / 60000), 'min )')
+  }
 
   // Process and store raw events
+  // Build set of existing AW event IDs to avoid re-classifying old events
+  const db = getDb()
+  const existingRows = db?.exec('SELECT aw_id FROM raw_events')
+  const existingIds = new Set<string>()
+  if (existingRows && existingRows[0]) {
+    for (const row of existingRows[0].values) {
+      existingIds.add(row[0] as string)
+    }
+  }
+
+  let minNewTime: string | null = null
+  let maxNewTime: string | null = null
+
   for (const awEvent of events) {
     const duration = awEvent.duration
     if (duration < NOISE_THRESHOLD_SECONDS) continue
+
+    // Skip if already in DB — preserve original classification
+    if (existingIds.has(String(awEvent.id))) continue
 
     const title = awEvent.data?.title || ''
     const app = awEvent.data?.app || ''
@@ -83,19 +108,35 @@ export async function syncActivityWatch(): Promise<void> {
 
     const { subject } = result
 
+    const ts = new Date(awEvent.timestamp)
     insertRawEvent({
       aw_id: String(awEvent.id),
-      timestamp: new Date(awEvent.timestamp),
+      timestamp: ts,
       duration,
       app,
       title,
       url,
       subject,
     })
+    const tsISO = ts.toISOString()
+    if (minNewTime === null || tsISO < minNewTime) minNewTime = tsISO
+    if (maxNewTime === null || tsISO > maxNewTime) maxNewTime = tsISO
   }
 
-  // Rebuild merged segments for today
-  rebuildMergedSegments(today)
+  // Update daily_stats from raw_events (don't rebuild merged_segments — would overwrite manual split/merge)
+  if (minNewTime && maxNewTime) {
+    const sums = db.exec(
+      'SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE date(timestamp) = ? AND subject IS NOT NULL GROUP BY subject',
+      [today]
+    )
+    if (sums && sums[0]) {
+      for (const row of sums[0].values) {
+        const subject = row[0] as Subject
+        const totalSeconds = row[1] as number
+        updateDailyStats(today, subject, totalSeconds)
+      }
+    }
+  }
 
   // Check for newly unlocked achievements
   const newUnlocks = checkAndUnlockAchievements()
@@ -106,18 +147,19 @@ export async function syncActivityWatch(): Promise<void> {
   save()
 }
 
-/** 拉取今天全天数据（手动刷新时调用） */
+/** 拉取今天全天数据（手动刷新时调用）— 全量重建，恢复被意外删除的数据 */
 export async function syncFullToday(): Promise<void> {
   const now = new Date()
   const today = now.toLocaleDateString('sv-SE')
   const start = `${today}T00:00:00+08:00`
   const end = now.toISOString()
 
-  // Clear today's old data so new classification rules take effect
+  // Clear merged segments and daily_stats — full rebuild from raw_events
   const db = getDb()
-  db?.run(`DELETE FROM raw_events WHERE timestamp >= ? AND timestamp <= ?`, [`${today}T00:00:00`, `${today}T23:59:59`])
   clearMergedSegments(today)
   db?.run("DELETE FROM daily_stats WHERE date = ?", [today])
+  // 清除所有历史 daily_stats 中的非核心科目脏数据
+  db?.run("DELETE FROM daily_stats WHERE subject NOT IN ('物理','数学','英语')")
 
   console.log('[sync-full] Fetching from', start, 'to', end)
 
@@ -154,6 +196,10 @@ export async function syncFullToday(): Promise<void> {
       subject: result.subject,
     })
     stored++
+    // 诊断：打印 FREE高考英语 事件的科目分配情况
+    if (title.includes('FREE高考英语') || title.includes('零基础')) {
+      console.log('[sync-full DIAG]', title, 'duration:', duration, 's =', Math.round(duration / 60), 'min, subject:', result.subject)
+    }
   }
 
   console.log('[sync-full] noise:', noiseDropped, 'classified-dropped:', classifiedDropped, 'stored:', stored)
@@ -161,6 +207,25 @@ export async function syncFullToday(): Promise<void> {
     console.log('[sync-full] Dropped samples:', droppedSamples)
   }
 
+  // 对兜底分类（其他/未分类）的 raw_events 用最新规则重新分类，不影响用户手动修改的科目
+  const fallbackRows = db.exec(
+    "SELECT aw_id, title, app, url FROM raw_events WHERE date(timestamp) = ? AND subject IN ('其他', '未分类')",
+    [today]
+  )
+  if (fallbackRows && fallbackRows[0]) {
+    let reclassified = 0
+    for (const row of fallbackRows[0].values) {
+      const [awId, title, app, url] = row as [string, string, string, string | null]
+      const newResult = classifyEvent(title, app, url)
+      if (newResult && newResult.subject !== '其他' && newResult.subject !== '未分类') {
+        db?.run('UPDATE raw_events SET subject = ? WHERE aw_id = ?', [newResult.subject, awId])
+        reclassified++
+      }
+    }
+    if (reclassified > 0) console.log('[sync-full] reclassified', reclassified, 'fallback raw_events')
+  }
+
+  // Full rebuild from ALL raw_events — restores any data eaten by previous rebuild-in-range bugs
   rebuildMergedSegments(today)
 
   const segs = getMergedSegments(today)
@@ -219,7 +284,7 @@ export function rebuildMergedSegments(date: string): void {
           'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)'
         )
         for (const c of segment.constituents) {
-          stmt.run([date, segment.start_time, segment.end_time, c.duration, segment.subject, String(c.title ?? ''), String(c.app ?? ''), parentId])
+          stmt.run([date, segment.start_time, segment.end_time, c.duration, c.subject, String(c.title ?? ''), String(c.app ?? ''), parentId])
         }
         stmt.free()
       }
@@ -227,15 +292,76 @@ export function rebuildMergedSegments(date: string): void {
   }
 
   // Update daily stats for each subject
-  const subjectTotals = new Map<Subject, number>()
-  for (const segment of merged) {
-    const current = subjectTotals.get(segment.subject) || 0
-    subjectTotals.set(segment.subject, current + segment.duration)
+  // Calculate daily_stats directly from raw_events for accurate per-subject totals
+  // (merged segments may absorb fragments across subjects for display purposes)
+  const rawTotals = db.exec(
+    "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE date(timestamp) = ? AND subject IS NOT NULL GROUP BY subject",
+    [date]
+  )
+  if (rawTotals && rawTotals[0]) {
+    for (const row of rawTotals[0].values) {
+      const subject = row[0] as Subject
+      const totalSeconds = row[1] as number
+      updateDailyStats(date, subject, totalSeconds)
+    }
   }
+}
 
-  for (const [subject, totalSeconds] of subjectTotals) {
-    if (subject === '未分类' || subject === '其他') continue
-    updateDailyStats(date, subject, totalSeconds)
+/**
+ * Rebuild merged segments only within a specific time range, preserving segments outside it.
+ * Used by auto-sync to avoid overwriting manual split/merge operations.
+ */
+export function rebuildMergedSegmentsInRange(date: string, startTime: string, endTime: string): void {
+  const db = getDb()
+
+  // Delete only merged_segments overlapping this range
+  db?.run(
+    'DELETE FROM merged_segments WHERE date = ? AND start_time < ? AND end_time > ?',
+    [date, endTime, startTime]
+  )
+
+  // Get raw events from an expanded range (include margin for gap-fill merging)
+  const expandedStart = new Date(new Date(startTime).getTime() - 10 * 60 * 1000).toISOString()
+  const expandedEnd = new Date(new Date(endTime).getTime() + 10 * 60 * 1000).toISOString()
+  const result = db.exec(`
+    SELECT timestamp, duration, app, title, subject
+    FROM raw_events
+    WHERE timestamp >= ? AND timestamp <= ?
+    ORDER BY timestamp ASC
+  `, [expandedStart, expandedEnd])
+
+  if (!result || result.length === 0) return
+
+  const rows = result[0].values.map(row => ({
+    timestamp: new Date(row[0] as string),
+    duration: row[1] as number,
+    app: row[2] as string,
+    title: row[3] as string,
+    subject: row[4] as Subject,
+  }))
+
+  const merged = mergeSegments(rows)
+
+  for (const segment of merged) {
+    const safeTitle = String(segment.title ?? '')
+    const safeApp = String(segment.app ?? '')
+    db?.run(
+      'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)',
+      [date, segment.start_time, segment.end_time, segment.duration, segment.subject, safeTitle, safeApp]
+    )
+    if (segment.constituents.length > 1) {
+      const idRow = db?.exec('SELECT last_insert_rowid()')
+      const parentId = idRow?.[0]?.values?.[0]?.[0] as number
+      if (parentId != null) {
+        const stmt = db.prepare(
+          'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)'
+        )
+        for (const c of segment.constituents) {
+          stmt.run([date, segment.start_time, segment.end_time, c.duration, c.subject, String(c.title ?? ''), String(c.app ?? ''), parentId])
+        }
+        stmt.free()
+      }
+    }
   }
 }
 
@@ -254,7 +380,7 @@ interface MergedEntry {
   subject: Subject
   title: string
   app: string
-  constituents: { title: string; app: string; duration: number }[]
+  constituents: { subject: Subject; title: string; app: string; duration: number }[]
 }
 
 function mergeSegments(entries: RawEntry[]): MergedEntry[] {
@@ -268,11 +394,11 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
     duration: number
     titleDurations: Map<string, number>
     apps: Set<string>
-    constituents: { title: string; app: string; duration: number }[]
+    constituents: { subject: Subject; title: string; app: string; duration: number }[]
   } | null = null
 
   const isStudy = (subject: Subject): boolean => {
-    return subject !== '休闲' && subject !== '未分类' && subject !== '其他'
+    return subject !== '休闲' && subject !== '其他' && subject !== '未分类'
   }
 
   for (const entry of entries) {
@@ -286,7 +412,7 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
         duration: entry.duration,
         titleDurations: td,
         apps: new Set([entry.app]),
-        constituents: [{ title: entry.title, app: entry.app, duration: entry.duration }],
+        constituents: [{ subject: entry.subject, title: entry.title, app: entry.app, duration: entry.duration }],
       }
       continue
     }
@@ -302,17 +428,17 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
       current.duration += entry.duration
       current.titleDurations.set(entry.title, (current.titleDurations.get(entry.title) || 0) + entry.duration)
       current.apps.add(entry.app)
-      current.constituents.push({ title: entry.title, app: entry.app, duration: entry.duration })
+      current.constituents.push({ subject: entry.subject, title: entry.title, app: entry.app, duration: entry.duration })
       continue
     }
 
     // Rule ④: Study segment + short non-study interlude (< 5 min) → absorb into study segment
     if (currentIsStudy && !entryIsStudy && gap >= 0 && gap < INTERLUDE_THRESHOLD * 1000 && entry.duration < INTERLUDE_THRESHOLD) {
       current.end = entryEnd
-      current.duration += entry.duration   // short non-study counts toward study time
+      current.duration += entry.duration
       current.titleDurations.set(entry.title, (current.titleDurations.get(entry.title) || 0) + entry.duration)
       current.apps.add(entry.app)
-      current.constituents.push({ title: entry.title, app: entry.app, duration: entry.duration })
+      current.constituents.push({ subject: entry.subject, title: entry.title, app: entry.app, duration: entry.duration })
       continue
     }
 
@@ -342,7 +468,7 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
       duration: entry.duration,
       titleDurations: td2,
       apps: new Set([entry.app]),
-      constituents: [{ title: entry.title, app: entry.app, duration: entry.duration }],
+      constituents: [{ subject: entry.subject, title: entry.title, app: entry.app, duration: entry.duration }],
     }
   }
 
@@ -364,8 +490,84 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
     })
   }
 
-  // Post-process: drop segments shorter than 60 seconds
-  return merged.filter(s => s.duration >= 60)
+  // Post-process: absorb fragments < 5 min into the nearest neighbor
+  const MIN_SEGMENT_SEC = 300
+  const gapBetween = (a: MergedEntry, b: MergedEntry): number => {
+    const aEnd = new Date(a.end_time).getTime()
+    const bStart = new Date(b.start_time).getTime()
+    return Math.abs(bStart - aEnd)
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (let i = merged.length - 1; i >= 0; i--) {
+      if (merged[i].duration >= MIN_SEGMENT_SEC) continue
+      const frag = merged[i]
+      // Find the best neighbor: prefer same-subject, fall back to nearest by time
+      let bestIdx = -1
+      let bestGap = Infinity
+      const tryNeighbor = (idx: number) => {
+        const g = gapBetween(merged[i], merged[idx])
+        // Same subject gets priority (gap * 0.1 to heavily favor same-subject)
+        const score = merged[idx].subject === frag.subject ? g * 0.1 : g
+        if (score < bestGap) { bestIdx = idx; bestGap = score }
+      }
+      if (i > 0) tryNeighbor(i - 1)
+      if (i < merged.length - 1) tryNeighbor(i + 1)
+      if (bestIdx === -1) continue
+      const target = merged[bestIdx]
+      // Adjust start/end to span the absorbed fragment (duration included)
+      if (frag.start_time < target.start_time) target.start_time = frag.start_time
+      if (frag.end_time > target.end_time) target.end_time = frag.end_time
+      target.duration += frag.duration
+      target.constituents.push(...frag.constituents)
+      merged.splice(i, 1)
+      changed = true
+    }
+  }
+
+  // Gap-fill merge: if < 10 min gap between same-subject segments, merge for display continuity
+  const GAP_FILL_SEC = 600
+  let gapChanged = true
+  while (gapChanged) {
+    gapChanged = false
+    for (let i = merged.length - 1; i >= 1; i--) {
+      const prev = merged[i - 1]
+      const curr = merged[i]
+      if (prev.subject !== curr.subject) continue
+      const prevEnd = new Date(prev.end_time).getTime()
+      const currStart = new Date(curr.start_time).getTime()
+      if (currStart - prevEnd >= GAP_FILL_SEC * 1000) continue
+      // Merge: same-subject gap fill (duration included)
+      if (curr.end_time > prev.end_time) prev.end_time = curr.end_time
+      prev.duration += curr.duration
+      prev.constituents.push(...curr.constituents)
+      merged.splice(i, 1)
+      gapChanged = true
+    }
+  }
+
+  // Recalculate duration: only count constituents matching the segment's subject
+  // (absorbed non-same-subject fragments should not inflate the displayed duration)
+  for (const seg of merged) {
+    seg.duration = seg.constituents
+      .filter(c => c.subject === seg.subject)
+      .reduce((sum, c) => sum + c.duration, 0)
+  }
+
+  // Final gap-fill: stretch any adjacent segments with < 10 min gap to touch visually
+  // (this only adjusts end_time/start_time, not duration, to eliminate visual blanks)
+  for (let i = merged.length - 1; i >= 1; i--) {
+    const prevEnd = new Date(merged[i - 1].end_time).getTime()
+    const currStart = new Date(merged[i].start_time).getTime()
+    const gap = currStart - prevEnd
+    if (gap > 0 && gap < 600000) {  // 10 minutes
+      // Stretch previous segment's end_time to meet current segment's start_time
+      merged[i - 1].end_time = merged[i].start_time
+    }
+  }
+
+  return merged
 }
 
 function getNextDate(date: string): string {

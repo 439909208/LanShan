@@ -8,7 +8,7 @@ interface WeekTrendProps {
   coreSubjects: string[]
 }
 
-const DAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const DAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
 function cssVar(name: string): string {
   if (typeof document === 'undefined') return ''
@@ -22,9 +22,10 @@ export default function WeekTrendChart({ data, prevWeekData, coreSubjects }: Wee
   const prevWeekTotal = prevWeekData.reduce((s, d) => s + d.total, 0)
   const diff = thisWeekTotal - prevWeekTotal
 
-  const chartData = data.map((d, i) => {
+  const chartData = data.map((d) => {
+    const date = new Date(d.date + 'T00:00:00')
     const point: Record<string, any> = {
-      label: DAY_LABELS[i] || '',
+      label: DAY_NAMES[date.getDay()] || '',
     }
     if (viewMode === 'overview') {
       point['总计'] = d.total

@@ -1,10 +1,9 @@
 const SUBJECT_COLORS: Record<string, string> = {
-  '物理': '#f59e0b',
+  '物理': '#facc15',
   '数学': '#3b82f6',
-  '英语': '#22c55e',
+  '英语': '#ef4444',
   '休闲': '#ec4899',
   '其他': '#9ca3af',
-  '未分类': '#64748b',
 }
 
 const SUBJECT_ICONS: Record<string, string> = {
@@ -13,7 +12,6 @@ const SUBJECT_ICONS: Record<string, string> = {
   '英语': '🔤',
   '休闲': '🎮',
   '其他': '📋',
-  '未分类': '❓',
 }
 
 /** 三阶图标映射：初涉 → 半程 → 凌顶 */

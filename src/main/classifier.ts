@@ -8,7 +8,7 @@ export interface ClassifyResult {
 
 /**
  * 可能含有学习内容的模糊 app/标题列表。
- * 只有当这些条目才需要托盘科目覆盖或手动标记为"未分类"。
+ * 只有当这些条目才需要托盘科目覆盖或手动标记。
  * 其他不匹配关键词的条目一律跳过，不入库。
  */
 const AMBIGUOUS_PATTERNS = [
@@ -21,7 +21,7 @@ const AMBIGUOUS_PATTERNS = [
 
 /**
  * 判断一个条目是否属于"模糊条目"（标题太通用，无法判断科目，
- * 但可能是学习内容）。只有这类条目才需要托盘兜底或标记为未分类。
+ * 但可能是学习内容）。只有这类条目才需要记入"其他"。
  */
 function isAmbiguous(title: string, app: string): boolean {
   const lower = (title + ' ' + app).toLowerCase()
@@ -34,7 +34,7 @@ function isAmbiguous(title: string, app: string): boolean {
  * 优先级：
  * 1. 标题关键词匹配（最高优先级规则优先）
  * 2. 模糊条目且设了托盘科目 → 用托盘科目覆盖
- * 3. 模糊条目但没设托盘 → 标记为未分类（让用户手动标记）
+ * 3. 模糊条目但没设托盘 → 归入其他（让用户手动标记）
  * 4. 其他条目（不匹配关键词且不模糊）→ 返回 null，跳过不入库
  */
 export function classifyEvent(
@@ -77,7 +77,7 @@ export function classifyEvent(
     }
   }
 
-  // Step 2: 模糊条目（如"视频播放"）→ 用托盘科目覆盖或标记为未分类
+  // Step 2: 模糊条目（如"视频播放"）→ 用托盘科目覆盖或归入其他
   if (isAmbiguous(title, app)) {
     const traySubject = getTraySubject()
     if (traySubject) {
@@ -87,7 +87,7 @@ export function classifyEvent(
       }
     }
     return {
-      subject: '未分类',
+      subject: '其他',
       method: 'ambiguous',
     }
   }
@@ -99,12 +99,11 @@ export function classifyEvent(
 /** 获取科目色值 */
 export function getSubjectColor(subject: Subject): string {
   const colors: Record<Subject, string> = {
-    '物理': '#f59e0b',
+    '物理': '#facc15',
     '数学': '#3b82f6',
-    '英语': '#22c55e',
+    '英语': '#ef4444',
     '休闲': '#ec4899',
     '其他': '#9ca3af',
-    '未分类': '#64748b',
   }
   return colors[subject] || '#64748b'
 }
@@ -117,9 +116,8 @@ export function getSubjectIcon(subject: Subject): string {
     '英语': '🔤',
     '休闲': '🎮',
     '其他': '📋',
-    '未分类': '❓',
   }
-  return icons[subject] || '❓'
+  return icons[subject] || '📋'
 }
 
 /** 获取科目中文名 */

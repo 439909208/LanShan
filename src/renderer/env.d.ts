@@ -27,6 +27,10 @@ interface LanshanApi {
   exportRules: () => Promise<string>
   importRules: () => Promise<number>
   reclassifySegment: (segmentId: number, newSubject: string) => Promise<void>
+  reclassifyByTitle: (date: string, title: string, newSubject: string) => Promise<void>
+  reclassifyByTitleInRange: (date: string, startTime: string, endTime: string, title: string, newSubject: string) => Promise<void>
+  splitSegment: (segmentId: number, splitTime: string) => Promise<void>
+  mergeAdjacentSegments: (id1: number, id2: number) => Promise<boolean>
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>

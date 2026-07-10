@@ -47,6 +47,13 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
     return saved ? parseInt(saved, 10) : DEFAULT_ZOOM_INDEX
   })
   const [detailSeg, setDetailSeg] = useState<TimelineSegment | null>(null)
+  const [classifyChildTitle, setClassifyChildTitle] = useState<string | null>(null)
+  const [scissorMode, setScissorMode] = useState(false)
+  const [splitTarget, setSplitTarget] = useState<{segId: number; splitTime: string; splitTimeDisplay: string} | null>(null)
+  const [scissorCursorX, setScissorCursorX] = useState<number | null>(null)
+  const [scissorCursorTime, setScissorCursorTime] = useState<string>('')
+  const [mergeMode, setMergeMode] = useState(false)
+  const [mergeFirst, setMergeFirst] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const loadedDateRef = useRef<string>('')
   const timeCenterRef = useRef<number>(12 * 60) // minutes from 00:00, for zoom center
@@ -85,12 +92,24 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
     }
   }
 
-  const isStudy = (s: string) => s !== '休闲' && s !== '未分类' && s !== '其他'
+  const isStudy = (s: string) => s !== '休闲' && s !== '其他' && s !== '未分类'
   const filteredSegments = segments.filter(s =>
     filter === 'study' ? isStudy(s.subject) : true
   )
   const displaySegments = filteredSegments.filter(s => !s.is_exploded)
   const totalDuration = displaySegments.reduce((sum, s) => sum + s.duration, 0)
+
+  async function handleSplitConfirm(): Promise<void> {
+    if (!splitTarget) return
+    try {
+      await window.lanshan.splitSegment(splitTarget.segId, splitTarget.splitTime)
+      setSplitTarget(null)
+      setScissorMode(false)
+      await loadSegments()
+    } catch (err) {
+      console.error('Failed to split segment:', err)
+    }
+  }
 
   async function handleClassify(segmentId: number, subject: string): Promise<void> {
     try {
@@ -100,6 +119,17 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
       await loadSegments()
     } catch (err) {
       console.error('Failed to reclassify:', err)
+    }
+  }
+
+  async function handleReclassifyChildTitle(title: string, newSubject: string): Promise<void> {
+    if (!detailSeg) return
+    try {
+      await window.lanshan.reclassifyByTitleInRange(date, detailSeg.start_time, detailSeg.end_time, title, newSubject)
+      setClassifyChildTitle(null)
+      await loadSegments()
+    } catch (err) {
+      console.error('Failed to reclassify child title:', err)
     }
   }
 
@@ -175,6 +205,22 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
 
         {/* Zoom controls */}
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => { setScissorMode(!scissorMode); setSplitTarget(null); setDetailSeg(null); setScissorCursorX(null) }}
+            className="text-base leading-none transition-opacity hover:opacity-100"
+            style={{ opacity: scissorMode ? 1 : 0.45, color: scissorMode ? 'var(--accent)' : secondaryColor }}
+            title={scissorMode ? '退出分割模式' : '剪刀模式：点击段进行分割'}
+          >
+            ✂️
+          </button>
+          <button
+            onClick={() => { setMergeMode(!mergeMode); setMergeFirst(null); setScissorMode(false); setScissorCursorX(null); setSplitTarget(null); setDetailSeg(null) }}
+            className="text-base leading-none transition-opacity hover:opacity-100"
+            style={{ opacity: mergeMode ? 1 : 0.45, color: mergeMode ? 'var(--accent)' : secondaryColor }}
+            title={mergeMode ? '退出合并模式' : '合并模式：点击两个相邻段进行合并'}
+          >
+            🔗
+          </button>
           <span className="text-xs tabular-nums" style={{ color: 'var(--text-muted)' }}>
             {displaySegments.length} 段 · {formatShortDuration(totalDuration)}
           </span>
@@ -195,6 +241,18 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
         ref={scrollRef}
         onScroll={handleScroll}
         onWheel={handleWheel}
+        onMouseMove={(e) => {
+          if (!scissorMode || !scrollRef.current) { setScissorCursorX(null); return }
+          const rect = scrollRef.current.getBoundingClientRect()
+          const scrollLeft = scrollRef.current.scrollLeft
+          const xInTimeline = e.clientX - rect.left + scrollLeft
+          const minutes = Math.max(0, Math.min(1439, (xInTimeline / timelineWidth) * 1440))
+          const h = Math.floor(minutes / 60)
+          const m = Math.floor(minutes % 60)
+          setScissorCursorX(xInTimeline)
+          setScissorCursorTime(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`)
+        }}
+        onMouseLeave={() => { setScissorCursorX(null) }}
         className="relative overflow-x-auto overflow-y-hidden rounded-xl"
         style={{ height: '220px', background: elevatedBg, border: `1px solid ${borderColor}` }}
       >
@@ -214,6 +272,17 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
           {/* Bottom border */}
           <div className="absolute bottom-0 left-0 right-0 h-px" style={{ background: borderColor }} />
 
+          {/* Scissors cursor dashed line */}
+          {scissorMode && scissorCursorX != null && (
+            <div className="absolute top-0 bottom-0 pointer-events-none z-10" style={{ left: `${scissorCursorX}px`, width: '1px' }}>
+              <div className="absolute inset-0" style={{ borderLeft: '2px dashed var(--accent)', opacity: 0.8 }} />
+              <span className="absolute top-1 left-1.5 text-[10px] whitespace-nowrap px-1 py-0.5 rounded font-medium"
+                style={{ background: 'var(--accent)', color: '#fff' }}>
+                {scissorCursorTime}
+              </span>
+            </div>
+          )}
+
           {/* Segments */}
           {displaySegments.map((seg) => {
             const startMin = parseTime(seg.start_time)
@@ -228,12 +297,13 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
             return (
               <div
                 key={seg.id}
-                className="absolute rounded transition-all cursor-pointer hover:brightness-110"
+                className="absolute transition-all cursor-pointer hover:brightness-110"
                 style={{
                   left: `${x}px`,
                   width: `${w}px`,
                   height: '80px',
                   top: '24px',
+                  borderRadius: w < 8 ? '0' : '3px 3px 0 0',
                   background: isLockScreen
                     ? `repeating-linear-gradient(45deg, ${color}22, ${color}22 6px, transparent 6px, transparent 12px)`
                     : isFun
@@ -242,6 +312,8 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
                         ? `repeating-linear-gradient(45deg, ${color}88, ${color}88 4px, transparent 4px, transparent 8px)`
                         : color,
                   borderLeft: isAmbiguous ? `2px dashed ${color}` : 'none',
+                  outline: mergeMode && mergeFirst === seg.id ? `3px solid var(--accent)` : 'none',
+                  outlineOffset: mergeMode && mergeFirst === seg.id ? '-1px' : '0',
                   minWidth: '4px',
                 }}
                 onMouseEnter={(e) => {
@@ -250,7 +322,42 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
                   setTooltipPos({ x: rect.left + rect.width / 2, y: rect.top - 8 })
                 }}
                 onMouseLeave={() => setHoveredSeg(null)}
-                onClick={() => {
+                onClick={(e) => {
+                  if (scissorMode) {
+                    if (!scrollRef.current) return
+                    const rect = scrollRef.current.getBoundingClientRect()
+                    const scrollLeft = scrollRef.current.scrollLeft
+                    const xInTimeline = e.clientX - rect.left + scrollLeft
+                    const minutes = Math.max(0, Math.min(1439, (xInTimeline / timelineWidth) * 1440))
+                    const h = Math.floor(minutes / 60)
+                    const m = Math.floor(minutes % 60)
+                    const splitTimeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+                    // Construct local time (+08:00 for Asia/Shanghai), then convert to UTC ISO to match DB timestamps
+                    const localDate = new Date(`${date}T${splitTimeStr}:00+08:00`)
+                    const splitISO = localDate.toISOString()
+                    setSplitTarget({ segId: seg.id, splitTime: splitISO, splitTimeDisplay: splitTimeStr })
+                    return
+                  }
+                  if (mergeMode) {
+                    if (mergeFirst === null) {
+                      setMergeFirst(seg.id)
+                    } else if (mergeFirst === seg.id) {
+                      setMergeFirst(null)
+                    } else {
+                      const s1 = displaySegments.find(s => s.id === mergeFirst)
+                      if (s1) {
+                        window.lanshan.mergeAdjacentSegments(mergeFirst, seg.id).then(() => {
+                          setMergeFirst(null)
+                          setMergeMode(false)
+                          setDetailSeg(null)
+                          loadSegments()
+                        })
+                      } else {
+                        setMergeFirst(null)
+                      }
+                    }
+                    return
+                  }
                   if (seg.subject === '未分类') {
                     setClassifySegId(seg.id)
                   } else {
@@ -323,24 +430,50 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
               <p className="truncate" title={detailSeg.title}>📄 {detailSeg.title}</p>
               <p className="truncate" style={{ color: 'var(--text-muted)' }}>💻 {detailSeg.app}</p>
             </div>
-            {/* Merged constituents — children of this segment */}
+            {/* Merged constituents — grouped by title, each with classify tag */}
             {(() => {
               const children = segments.filter(s => s.parent_id === detailSeg.id)
               if (children.length === 0) return null
+              // Group by title || app, accumulate duration, track unique subjects
+              const titleMap = new Map<string, { title: string; duration: number; subjects: Set<string> }>()
+              for (const c of children) {
+                const key = c.title || c.app
+                const cur = titleMap.get(key)
+                if (cur) {
+                  cur.duration += c.duration
+                  cur.subjects.add(c.subject)
+                } else {
+                  titleMap.set(key, { title: key, duration: c.duration, subjects: new Set([c.subject]) })
+                }
+              }
+              const titleGroups = Array.from(titleMap.values())
+                .map(g => ({ ...g, subjects: Array.from(g.subjects) }))
+                .sort((a, b) => b.duration - a.duration)
               return (
                 <div className="mt-3 pt-3" style={{ borderTop: `1px solid ${borderLight}` }}>
                   <p className="text-xs mb-2 font-medium" style={{ color: secondaryColor }}>
-                    合并了 {children.length} 项：
+                    合并了 {children.length} 项 · {titleGroups.length} 个标题
                   </p>
                   <div className="space-y-1 max-h-28 overflow-y-auto">
-                    {children.map(c => (
-                      <div key={c.id} className="flex items-center gap-2 text-xs py-1 px-2 rounded"
+                    {titleGroups.map((g, i) => (
+                      <div key={i} className="flex items-center gap-2 text-xs py-1 px-2 rounded"
                         style={{ background: elevatedBg }}>
-                        <span className="tabular-nums w-14 flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                          {formatShortDuration(c.duration)}
+                        <span className="tabular-nums w-14 flex-shrink-0 font-medium" style={{ color: textColor }}>
+                          {formatShortDuration(g.duration)}
                         </span>
-                        <span className="truncate">{c.title}</span>
-                        <span className="flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{c.app}</span>
+                        <span className="truncate flex-1" style={{ color: secondaryColor }}>{g.title}</span>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {g.subjects.map(s => (
+                            <button
+                              key={s}
+                              onClick={() => setClassifyChildTitle(classifyChildTitle === g.title ? null : g.title)}
+                              className="text-xs px-2 py-0.5 rounded-full font-medium transition-opacity hover:opacity-80"
+                              style={{ background: getSubjectColor(s) + '22', color: getSubjectColor(s) }}
+                            >
+                              {getSubjectIcon(s)} {s}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -362,6 +495,33 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
                 ))}
               </div>
             </div>
+
+            {/* Classification popup for child title */}
+            {classifyChildTitle && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setClassifyChildTitle(null)} />
+                <div className="fixed z-50 rounded-xl p-2 shadow-xl"
+                  style={{ left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+                           background: cardBg, border: `1px solid ${borderLight}` }}
+                >
+                  <p className="text-sm px-2 pt-1 pb-2" style={{ color: secondaryColor }}>
+                    将「{classifyChildTitle}」标记为：
+                  </p>
+                  {['物理', '数学', '英语', '休闲', '其他'].map(s => (
+                    <button key={s} onClick={() => handleReclassifyChildTitle(classifyChildTitle, s)}
+                      className="w-full text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center gap-2"
+                      style={{ color: textColor }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = borderLight }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                      <span>{getSubjectIcon(s)}</span> {s}
+                    </button>
+                  ))}
+                  <button onClick={() => setClassifyChildTitle(null)}
+                    className="w-full text-left px-3 py-2 rounded-lg text-sm transition-all mt-1 pt-2"
+                    style={{ color: secondaryColor, borderTop: `1px solid ${borderLight}` }}>取消</button>
+                </div>
+              </>
+            )}
           </div>
         </>
       )}
@@ -375,7 +535,7 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
                      background: cardBg, border: `1px solid ${borderLight}` }}
           >
             <p className="text-sm px-2 pt-1 pb-2" style={{ color: secondaryColor }}>标记为哪个科目？</p>
-            {['物理', '数学', '英语', '化学', '生物', '语文'].map(s => (
+            {['物理', '数学', '英语', '休闲', '其他'].map(s => (
               <button key={s} onClick={() => handleClassify(classifySegId, s)}
                 className="w-full text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center gap-2"
                 style={{ color: textColor }}
@@ -387,6 +547,33 @@ export default function Timeline({ date }: TimelineProps): React.ReactElement {
             <button onClick={() => setClassifySegId(null)}
               className="w-full text-left px-3 py-2 rounded-lg text-sm transition-all mt-1 pt-2"
               style={{ color: secondaryColor, borderTop: `1px solid ${borderLight}` }}>取消</button>
+          </div>
+        </>
+      )}
+
+      {/* Split confirmation popup */}
+      {splitTarget && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setSplitTarget(null)} />
+          <div className="fixed z-50 rounded-xl p-3 shadow-xl"
+            style={{ left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+                     background: cardBg, border: `1px solid ${borderLight}`, minWidth: 240 }}
+          >
+            <p className="text-sm px-2 pt-1 pb-2" style={{ color: secondaryColor }}>
+              在 <strong>{splitTarget.splitTimeDisplay}</strong> 处分割此段？
+            </p>
+            <div className="flex gap-2 px-2 pb-2">
+              <button onClick={handleSplitConfirm}
+                className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                style={{ background: 'var(--accent)', color: '#fff' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}>
+                ✂️ 确认分割
+              </button>
+              <button onClick={() => setSplitTarget(null)}
+                className="flex-1 px-3 py-2 rounded-lg text-sm transition-all"
+                style={{ background: elevatedBg, color: secondaryColor }}>取消</button>
+            </div>
           </div>
         </>
       )}

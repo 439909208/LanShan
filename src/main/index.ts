@@ -1,9 +1,9 @@
 import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
-import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject } from './database'
+import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject } from './database'
 import { createTray, refreshTray } from './tray'
-import { startSync, stopSync, syncActivityWatch, syncFullToday } from './sync'
+import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
 const isDev = !app.isPackaged
 
@@ -81,7 +81,77 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-subjects', () => SUBJECTS)
   ipcMain.handle('get-core-subjects', () => CORE_SUBJECTS)
   ipcMain.handle('reclassify-segment', (_event, segmentId: number, newSubject: Subject) => {
+    const segDate = getMergedSegmentDate(segmentId)
     reclassifySegment(segmentId, newSubject)
+    // Don't call rebuildMergedSegments (would undo manual split/merge). Just recalculate daily_stats.
+    if (segDate) {
+      const db = getDb()
+      db?.run('DELETE FROM daily_stats WHERE date = ?', [segDate])
+      const sums = db?.exec('SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject', [segDate])
+      if (sums && sums[0]) {
+        for (const row of sums[0].values) {
+          updateDailyStats(segDate, row[0] as Subject, row[1] as number)
+        }
+      }
+    }
+  })
+  ipcMain.handle('reclassify-by-title', (_event, date: string, title: string, newSubject: Subject) => {
+    reclassifyByTitle(date, title, newSubject)
+    // Don't call rebuildMergedSegments. Just recalculate daily_stats.
+    const db = getDb()
+    db?.run('DELETE FROM daily_stats WHERE date = ?', [date])
+    const sums = db?.exec('SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject', [date])
+    if (sums && sums[0]) {
+      for (const row of sums[0].values) {
+        updateDailyStats(date, row[0] as Subject, row[1] as number)
+      }
+    }
+  })
+  ipcMain.handle('reclassify-by-title-in-range', (_event, date: string, startTime: string, endTime: string, title: string, newSubject: Subject) => {
+    reclassifyByTitleInRange(startTime, endTime, title, newSubject)
+    // Don't call rebuildMergedSegments. Just recalculate daily_stats.
+    const db = getDb()
+    db?.run('DELETE FROM daily_stats WHERE date = ?', [date])
+    const sums = db?.exec('SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject', [date])
+    if (sums && sums[0]) {
+      for (const row of sums[0].values) {
+        updateDailyStats(date, row[0] as Subject, row[1] as number)
+      }
+    }
+  })
+  ipcMain.handle('split-segment', (_event, segmentId: number, splitTime: string) => {
+    const segDate = splitSegment(segmentId, splitTime)
+    if (segDate) {
+      // Recalculate daily_stats from merged_segments (don't use rebuildMergedSegments, which would undo the split)
+      const db = getDb()
+      db?.run('DELETE FROM daily_stats WHERE date = ?', [segDate])
+      const sums = db?.exec(
+        'SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject',
+        [segDate]
+      )
+      if (sums && sums[0]) {
+        for (const row of sums[0].values) {
+          updateDailyStats(segDate, row[0] as Subject, row[1] as number)
+        }
+      }
+    }
+  })
+  ipcMain.handle('merge-adjacent-segments', (_event, id1: number, id2: number) => {
+    const segDate = getMergedSegmentDate(id1)
+    const ok = mergeAdjacentSegments(id1, id2)
+    if (ok && segDate) {
+      const db = getDb()
+      db?.run('DELETE FROM daily_stats WHERE date = ?', [segDate])
+      const sums = db?.exec(
+        'SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject',
+        [segDate]
+      )
+      if (sums && sums[0]) {
+        for (const row of sums[0].values) {
+          updateDailyStats(segDate, row[0] as Subject, row[1] as number)
+        }
+      }
+    }
   })
   ipcMain.handle('get-daily-breakdown', (_event, date: string) => getDailyBreakdown(date))
   ipcMain.handle('get-year-heatmap', (_event, year: number) => getYearHeatmapData(year))
@@ -104,9 +174,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-classification-rules', () => getClassificationRules())
   ipcMain.handle('add-classification-rule', (_event, subject: Subject, keyword: string, matchField: string, priority: number) => {
     addClassificationRule(subject, keyword, matchField, priority)
+    const updated = reclassifyRawEventsByKeyword(keyword, subject, matchField)
+    console.log('[rule] reclassified', updated, 'existing raw_events for keyword:', keyword)
+    const today = new Date().toLocaleDateString('sv-SE')
+    rebuildMergedSegments(today)
   })
   ipcMain.handle('delete-classification-rule', (_event, id: number) => {
     deleteClassificationRule(id)
+    const today = new Date().toLocaleDateString('sv-SE')
+    rebuildMergedSegments(today)
   })
   ipcMain.handle('export-rules', () => exportRules())
   ipcMain.handle('import-rules', () => importRules())

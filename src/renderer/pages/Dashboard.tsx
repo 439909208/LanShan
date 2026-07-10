@@ -3,12 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import { getSubjectIcon, getSubjectTierIcon, formatDuration, formatShortDuration } from '../utils'
 
 const C_COLORS: Record<string, string> = {
-  '物理': '#f59e0b',
+  '物理': '#facc15',
   '数学': '#3b82f6',
-  '英语': '#22c55e',
+  '英语': '#ef4444',
   '休闲': '#ec4899',
   '其他': '#9ca3af',
-  '未分类': '#64748b',
 }
 import SubjectRingChart from '../components/SubjectRingChart'
 import WeekTrendChart from '../components/WeekTrendChart'
@@ -114,7 +113,7 @@ export default function Dashboard(): React.ReactElement {
         <div className="flex flex-col gap-5 h-full overflow-y-auto">
           <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.5' }}>
             <h3 className="text-sm font-medium mb-3 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
-              今日科目分布
+              使用情况
             </h3>
             <div className="flex-1 min-h-0">
               <SubjectRingChart data={ringData} />

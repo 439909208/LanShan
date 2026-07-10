@@ -9,9 +9,9 @@ const DB_PATH = join(DATA_DIR, 'lanshan.db')
 const OLD_DB_PATH = join(app.getPath('userData'), 'lanshan.db')
 const BACKUP_DIR = join(DATA_DIR, 'backups')
 
-export type Subject = '物理' | '数学' | '英语' | '化学' | '生物' | '语文' | '休闲' | '其他' | '未分类'
+export type Subject = '物理' | '数学' | '英语' | '化学' | '生物' | '语文' | '休闲' | '其他'
 
-export const SUBJECTS: Subject[] = ['物理', '数学', '英语', '化学', '生物', '语文', '休闲', '其他', '未分类']
+export const SUBJECTS: Subject[] = ['物理', '数学', '英语', '化学', '生物', '语文', '休闲', '其他']
 export const CORE_SUBJECTS: Subject[] = ['物理', '数学', '英语']
 
 export interface RawEvent {
@@ -285,8 +285,8 @@ function cleanupOldUnclassified(): void {
   const keywords = ['视频播放', '百度网盘', 'baidunetdisk', 'video player', 'videoplayer']
   const cond = keywords.map(k => `(LOWER(title) LIKE '%${k}%' OR LOWER(app) LIKE '%${k}%')`).join(' OR ')
 
-  db.run(`DELETE FROM raw_events WHERE subject = '未分类' AND NOT (${cond})`)
-  db.run(`DELETE FROM merged_segments WHERE subject = '未分类' AND NOT (${cond})`)
+  db.run(`DELETE FROM raw_events WHERE subject = '未分类'`)
+  db.run(`DELETE FROM merged_segments WHERE subject = '未分类'`)
   db.run("DELETE FROM daily_stats WHERE subject = '未分类'")
 
   setSetting('db_version', '2')
@@ -419,6 +419,34 @@ export function deleteClassificationRule(id: number): void {
   save()
 }
 
+export function reclassifyRawEventsByKeyword(keyword: string, newSubject: Subject, matchField: string): number {
+  const like = `%${keyword}%`
+  let sql: string
+  let params: (string | number)[]
+
+  if (matchField === 'all') {
+    sql = 'UPDATE raw_events SET subject = ? WHERE (title LIKE ? OR app LIKE ? OR url LIKE ?)'
+    params = [newSubject, like, like, like]
+  } else if (matchField === 'title') {
+    sql = 'UPDATE raw_events SET subject = ? WHERE title LIKE ?'
+    params = [newSubject, like]
+  } else if (matchField === 'app') {
+    sql = 'UPDATE raw_events SET subject = ? WHERE app LIKE ?'
+    params = [newSubject, like]
+  } else if (matchField === 'url') {
+    sql = 'UPDATE raw_events SET subject = ? WHERE url LIKE ?'
+    params = [newSubject, like]
+  } else {
+    return 0
+  }
+
+  db?.run(sql, params)
+  save()
+
+  const result = db?.exec('SELECT changes()')
+  return (result?.[0]?.values?.[0]?.[0] as number) || 0
+}
+
 export function insertRawEvent(event: Omit<RawEvent, 'id'>): void {
   db?.run(
     'INSERT OR IGNORE INTO raw_events (aw_id, timestamp, duration, app, title, url, subject) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -435,6 +463,14 @@ export function insertMergedSegment(segment: Omit<MergedSegment, 'id'>): void {
 
 export function clearMergedSegments(date: string): void {
   db?.run('DELETE FROM merged_segments WHERE date = ?', [date])
+}
+
+/** Delete merged segments that overlap with the given time range on the given date. */
+export function clearMergedSegmentsInRange(date: string, startTime: string, endTime: string): void {
+  db?.run(
+    'DELETE FROM merged_segments WHERE date = ? AND start_time < ? AND end_time > ?',
+    [date, endTime, startTime]
+  )
 }
 
 export function getMergedSegments(date: string): MergedSegment[] {
@@ -495,7 +531,7 @@ export function getDailyBreakdown(date: string): {
 }
 
 export function getTotalSecondsToday(date: string): number {
-  const result = db?.exec("SELECT COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND subject IN ('物理','数学','英语') AND is_exploded = 0", [date])
+  const result = db?.exec("SELECT COALESCE(SUM(duration), 0) FROM raw_events WHERE date(timestamp) = ? AND subject IN ('物理','数学','英语')", [date])
   if (result && result.length > 0 && result[0].values[0]) {
     return result[0].values[0][0] as number
   }
@@ -503,36 +539,231 @@ export function getTotalSecondsToday(date: string): number {
 }
 
 export function reclassifySegment(segmentId: number, newSubject: Subject): void {
-  const result = db?.exec('SELECT date, title, app, start_time FROM merged_segments WHERE id = ?', [segmentId])
+  const result = db?.exec('SELECT date, title, app, start_time, end_time, subject FROM merged_segments WHERE id = ?', [segmentId])
   if (!result || result.length === 0 || result[0].values.length === 0) return
 
   const row = result[0].values[0]
   const date = row[0] as string
   const title = row[1] as string
   const app = row[2] as string
+  const startTime = row[3] as string
+  const endTime = row[4] as string
+  const oldSubject = row[5] as string
 
   db?.run('UPDATE merged_segments SET subject = ? WHERE id = ?', [newSubject, segmentId])
+  // Update ALL raw_events within the segment's time range (absorbed fragments may have different subjects)
   db?.run(
     `UPDATE raw_events SET subject = ?
-     WHERE date(timestamp) = ? AND title = ? AND app = ? AND (subject IS NULL OR subject = '未分类')`,
-    [newSubject, date, title, app]
+     WHERE timestamp >= ? AND timestamp <= ?`,
+    [newSubject, startTime, endTime]
   )
 
-  // Add a temp classification rule (skip for '未分类' and '其他' — those are fallbacks, not real classifications)
-  if (newSubject !== '未分类' && newSubject !== '其他') {
-    const existing = db?.exec(
-      "SELECT id FROM classification_rules WHERE keyword = ? AND (match_field = 'all' OR match_field = 'title')",
-      [title]
+  save()
+}
+
+/**
+ * Reclassify all merged segments (and their raw_events) with a matching title on a given date.
+ * Returns the number of segments affected.
+ */
+export function reclassifyByTitle(date: string, title: string, newSubject: Subject): number {
+  // Find all merged_segments on this date with the given title
+  const segments = db?.exec(
+    'SELECT id, start_time, end_time, subject FROM merged_segments WHERE date = ? AND title = ?',
+    [date, title]
+  )
+  if (!segments || segments.length === 0 || segments[0].values.length === 0) return 0
+
+  let count = 0
+  for (const row of segments[0].values) {
+    const segId = row[0] as number
+    const startTime = row[1] as string
+    const endTime = row[2] as string
+    const oldSubject = row[3] as string
+
+    // Update the merged_segment itself
+    db?.run('UPDATE merged_segments SET subject = ? WHERE id = ?', [newSubject, segId])
+    // Also update its exploded children if any
+    db?.run('UPDATE merged_segments SET subject = ? WHERE parent_id = ?', [newSubject, segId])
+
+    // Update raw_events within this segment's time range (all, regardless of current subject)
+    db?.run(
+      'UPDATE raw_events SET subject = ? WHERE timestamp >= ? AND timestamp <= ?',
+      [newSubject, startTime, endTime]
     )
-    if (!existing || existing.length === 0 || existing[0].values.length === 0) {
-      db?.run(
-        "INSERT INTO classification_rules (subject, keyword, match_field, priority) VALUES (?, ?, 'all', ?)",
-        [newSubject, title, 8]
-      )
-    }
+    count++
   }
 
   save()
+  return count
+}
+
+/**
+ * Reclassify raw_events within a specific time range that match the given title.
+ * Called when user reclassifies a title-group in the timeline detail modal.
+ */
+export function reclassifyByTitleInRange(startTime: string, endTime: string, title: string, newSubject: Subject): number {
+  const result = db?.run(
+    'UPDATE raw_events SET subject = ? WHERE timestamp >= ? AND timestamp <= ? AND title = ?',
+    [newSubject, startTime, endTime, title]
+  )
+  save()
+  return result?.[0]?.changes ?? 0
+}
+
+/**
+ * Split a merged segment at the given time point into two segments.
+ * The original segment and its children are deleted; two new parent segments
+ * (with their respective children) are inserted.
+ * Returns the date string on success, null on failure.
+ */
+export function splitSegment(segmentId: number, splitTime: string): string | null {
+  // Get the original segment
+  const result = db?.exec(
+    'SELECT date, start_time, end_time, duration, subject, title, app FROM merged_segments WHERE id = ? AND is_exploded = 0',
+    [segmentId]
+  )
+  if (!result || result.length === 0 || result[0].values.length === 0) return null
+
+  const row = result[0].values[0]
+  const date = row[0] as string
+  const startTime = row[1] as string
+  const endTime = row[2] as string
+  const duration = row[3] as number
+  const subject = row[4] as Subject
+  const title = row[5] as string
+  const app = row[6] as string
+
+  // Validate split time is strictly within range
+  if (splitTime <= startTime || splitTime >= endTime) return null
+
+  // Calculate time ratio for children distribution
+  const totalMs = new Date(endTime).getTime() - new Date(startTime).getTime()
+  const splitMs = new Date(splitTime).getTime() - new Date(startTime).getTime()
+  const ratio = splitMs / totalMs
+
+  // Get exploded children of this segment
+  const children = db?.exec(
+    'SELECT duration, subject, title, app FROM merged_segments WHERE parent_id = ? ORDER BY rowid',
+    [segmentId]
+  )
+
+  // Delete original parent + children
+  db?.run('DELETE FROM merged_segments WHERE id = ?', [segmentId])
+  db?.run('DELETE FROM merged_segments WHERE parent_id = ?', [segmentId])
+
+  // Insert front segment (duration 1 placeholder, recalculated below)
+  db?.run(
+    'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)',
+    [date, startTime, splitTime, 1, subject, title, app]
+  )
+  const frontIdRow = db?.exec('SELECT last_insert_rowid()')
+  const frontId = frontIdRow?.[0]?.values?.[0]?.[0] as number
+
+  // Insert back segment (duration 1 placeholder, recalculated below)
+  db?.run(
+    'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)',
+    [date, splitTime, endTime, 1, subject, title, app]
+  )
+  const backIdRow = db?.exec('SELECT last_insert_rowid()')
+  const backId = backIdRow?.[0]?.values?.[0]?.[0] as number
+
+  // Distribute children by time ratio
+  if (children && children[0] && children[0].values.length > 0) {
+    let accumulated = 0
+    const totalChildDuration = children[0].values.reduce((s: number, c: any[]) => s + (c[0] as number), 0)
+    for (const c of children[0].values) {
+      const childDuration = c[0] as number
+      const childSubject = c[1] as Subject || subject
+      const childTitle = c[2] as string || title
+      const childApp = c[3] as string || app
+
+      if (totalChildDuration > 0 && accumulated / totalChildDuration < ratio) {
+        db?.run(
+          'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)',
+          [date, startTime, splitTime, childDuration, childSubject, childTitle, childApp, frontId]
+        )
+        accumulated += childDuration
+      } else {
+        db?.run(
+          'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)',
+          [date, splitTime, endTime, childDuration, childSubject, childTitle, childApp, backId]
+        )
+      }
+    }
+  }
+
+  // Recalculate front/back duration from actual children (same-subject only).
+  // If no same-subject children on one side, use time-proportional duration to avoid visual gap.
+  const frontSum = db?.exec('SELECT COALESCE(SUM(duration),0) FROM merged_segments WHERE parent_id = ? AND subject = ?', [frontId, subject])
+  const backSum = db?.exec('SELECT COALESCE(SUM(duration),0) FROM merged_segments WHERE parent_id = ? AND subject = ?', [backId, subject])
+  let actualFront = frontSum?.[0]?.values?.[0]?.[0] as number || 0
+  let actualBack = backSum?.[0]?.values?.[0]?.[0] as number || 0
+  if (actualFront === 0) actualFront = Math.max(1, Math.round(duration * ratio))
+  if (actualBack === 0) actualBack = Math.max(1, duration - actualFront)
+  db?.run('UPDATE merged_segments SET duration = ? WHERE id = ?', [actualFront, frontId])
+  db?.run('UPDATE merged_segments SET duration = ? WHERE id = ?', [actualBack, backId])
+
+  save()
+  return date
+}
+
+/**
+ * Merge two adjacent segments with the same subject into one.
+ * Children of id2 are moved under id1; id2 is deleted.
+ * Returns true on success.
+ */
+export function mergeAdjacentSegments(id1: number, id2: number): boolean {
+  const r1 = db?.exec(
+    'SELECT date, start_time, end_time, subject FROM merged_segments WHERE id = ? AND is_exploded = 0',
+    [id1]
+  )
+  const r2 = db?.exec(
+    'SELECT date, start_time, end_time, subject FROM merged_segments WHERE id = ? AND is_exploded = 0',
+    [id2]
+  )
+  if (!r1 || !r2 || r1[0].values.length === 0 || r2[0].values.length === 0) return false
+
+  const s1 = r1[0].values[0]
+  const s2 = r2[0].values[0]
+  const date1 = s1[0] as string
+  const date2 = s2[0] as string
+  const subject1 = s1[3] as Subject
+  const subject2 = s2[3] as Subject
+
+  // Must be same date to merge
+  if (date1 !== date2) return false
+
+  const newStart = (s1[1] as string) < (s2[1] as string) ? s1[1] as string : s2[1] as string
+  const newEnd = (s1[2] as string) > (s2[2] as string) ? s1[2] as string : s2[2] as string
+
+  // Move all children of id2 under id1
+  db?.run('UPDATE merged_segments SET parent_id = ? WHERE parent_id = ?', [id1, id2])
+  // Unify all children's subject to match parent (supports cross-subject merge)
+  db?.run('UPDATE merged_segments SET subject = ? WHERE parent_id = ?', [subject1, id1])
+  // Update id1's time range
+  db?.run('UPDATE merged_segments SET start_time = ?, end_time = ? WHERE id = ?', [newStart, newEnd, id1])
+  // Delete id2
+  db?.run('DELETE FROM merged_segments WHERE id = ?', [id2])
+
+  // Recalculate duration from all children
+  const sum = db?.exec(
+    'SELECT COALESCE(SUM(duration),0) FROM merged_segments WHERE parent_id = ?',
+    [id1]
+  )
+  const actualDuration = sum?.[0]?.values?.[0]?.[0] as number || 1
+  db?.run('UPDATE merged_segments SET duration = ? WHERE id = ?', [actualDuration, id1])
+
+  save()
+  return true
+}
+
+/** Get the date of a merged segment by its ID */
+export function getMergedSegmentDate(segmentId: number): string | null {
+  const result = db?.exec('SELECT date FROM merged_segments WHERE id = ?', [segmentId])
+  if (result && result.length > 0 && result[0].values.length > 0) {
+    return result[0].values[0][0] as string
+  }
+  return null
 }
 
 export function getConsecutiveDays(): number {
@@ -602,7 +833,7 @@ export function getSubjectTotal(subject: Subject): number {
 }
 
 export function getTotalSecondsAllTime(): number {
-  const result = db?.exec('SELECT COALESCE(SUM(total_seconds), 0) FROM daily_stats')
+  const result = db?.exec("SELECT COALESCE(SUM(total_seconds), 0) FROM daily_stats WHERE subject IN ('物理','数学','英语')")
   if (result && result.length > 0 && result[0].values[0]) {
     return result[0].values[0][0] as number
   }
@@ -630,7 +861,9 @@ export function getWeekStats(days: number): DayStats[] {
 
     for (const s of stats) {
       subjects[s.subject] = (subjects[s.subject] || 0) + s.total_seconds
-      total += s.total_seconds
+      if (['物理', '数学', '英语'].includes(s.subject)) {
+        total += s.total_seconds
+      }
     }
 
     result.push({ date: dateStr, subjects, total })
@@ -700,7 +933,7 @@ export function getAchievementProgress(): AchievementInfo[] {
 
   const today = new Date().toISOString().split('T')[0]
   const todayStats = getDailyStats(today)
-  const todayTotal = todayStats.reduce((s, d) => s + d.total_seconds, 0)
+  const todayTotal = todayStats.filter(d => ['物理','数学','英语'].includes(d.subject)).reduce((s, d) => s + d.total_seconds, 0)
 
   const pm: Record<string, number> = {
     'total-30h':30*3600,'total-100h':100*3600,'total-250h':250*3600,
@@ -793,7 +1026,7 @@ export function checkAndUnlockAchievements(): string[] {
   const todayStats = getDailyStats(today)
   const todayMap: Record<string, number> = {}
   for (const s of todayStats) { todayMap[s.subject] = s.total_seconds }
-  const todayTotal = Object.values(todayMap).reduce((a, b) => a + b, 0)
+  const todayTotal = Object.entries(todayMap).filter(([k]) => ['物理','数学','英语'].includes(k)).reduce((a, [,v]) => a + v, 0)
 
   const subjMap: Record<string, number> = {
     '物理': getSubjectTotal('物理'),
@@ -909,23 +1142,23 @@ export function getPendingUnlocks(): string[] {
 
 /** 晨行天数：首段学习 < 07:00 */
 export function countMorningDays(): number {
-  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','未分类','其他')`)
+  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','其他')`)
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 
 /** 夜航天数：末段学习 > 22:00 */
 export function countNightDays(): number {
-  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','未分类','其他')`)
+  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','其他')`)
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 
 /** 朝暮行天数：同一天同时满足晨行+夜航 */
 export function countDawnDuskDays(): number {
   const morning = new Set<string>()
-  const mr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','未分类','其他')`)
+  const mr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','其他')`)
   if (mr) for (const r of mr[0]?.values || []) morning.add(r[0] as string)
   const night = new Set<string>()
-  const nr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','未分类','其他')`)
+  const nr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','其他')`)
   if (nr) for (const r of nr[0]?.values || []) night.add(r[0] as string)
   let count = 0
   for (const d of morning) { if (night.has(d)) count++ }
@@ -956,15 +1189,22 @@ export function countBalancedDays(): number {
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 
-/** 逆袭天数：当天学习 >= minSeconds 且前一天学习 < 1h（或没有记录） */
+/** 逆袭天数：当天核心三科学习 >= minSeconds 且前一天 < 1h（或没有记录） */
 export function countComebackDays(minSeconds: number): number {
   const r = db?.exec(`
-    SELECT COUNT(DISTINCT a.date) FROM daily_stats a
-    WHERE a.total_seconds >= ?
+    SELECT COUNT(*) FROM (
+      SELECT date, SUM(total_seconds) as day_total
+      FROM daily_stats
+      WHERE subject IN ('物理','数学','英语')
+      GROUP BY date
+    ) a
+    WHERE a.day_total >= ?
     AND NOT EXISTS (
       SELECT 1 FROM daily_stats b
       WHERE b.date = date(a.date, '-1 day')
-      AND b.total_seconds >= 3600
+      AND b.subject IN ('物理','数学','英语')
+      GROUP BY b.date
+      HAVING SUM(b.total_seconds) >= 3600
     )
   `, [minSeconds])
   return (r?.[0]?.values?.[0]?.[0] as number) || 0

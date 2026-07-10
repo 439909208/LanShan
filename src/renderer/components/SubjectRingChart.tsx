@@ -1,13 +1,13 @@
 import { PieChart, Pie, ResponsiveContainer, Tooltip } from 'recharts'
 import { getSubjectIcon, formatShortDuration } from '../utils'
+import { useState, useEffect } from 'react'
 
 const COLORS: Record<string, string> = {
-  '物理': '#f59e0b',
+  '物理': '#facc15',
   '数学': '#3b82f6',
-  '英语': '#22c55e',
+  '英语': '#ef4444',
   '休闲': '#ec4899',
   '其他': '#9ca3af',
-  '未分类': '#64748b',
 }
 
 interface RingChartProps {
@@ -21,14 +21,50 @@ function cssVar(name: string): string {
 }
 
 export default function SubjectRingChart({ data }: RingChartProps): React.ReactElement {
-  const total = data.reduce((sum, d) => sum + d.seconds, 0)
-  const chartData = data.filter(d => d.seconds > 0)
-  const chartDataWithFill = chartData.map(d => ({
+  const allData = data.filter(d => d.seconds > 0)
+  const allDataWithFill = allData.map(d => ({
     ...d,
     fill: COLORS[d.subject] || '#64748b',
   }))
 
-  if (chartData.length === 0) {
+  const allLabels = allData.map(d => d.subject)
+  const [visibleSubjects, setVisibleSubjects] = useState<string[]>([])
+
+  // data 加载后从 localStorage 恢复 toggle 状态
+  const allLabelsKey = allLabels.join(',')
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('ring-visible-subjects')
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[]
+        const valid = parsed.filter(s => allLabels.includes(s))
+        if (valid.length > 0) {
+          setVisibleSubjects(valid)
+          return
+        }
+      }
+    } catch {}
+    setVisibleSubjects(allLabels)
+  }, [allLabelsKey])
+
+  const toggleSubject = (subject: string) => {
+    setVisibleSubjects(prev => {
+      let next: string[]
+      if (prev.includes(subject)) {
+        if (prev.length <= 1) return prev
+        next = prev.filter(s => s !== subject)
+      } else {
+        next = [...prev, subject]
+      }
+      localStorage.setItem('ring-visible-subjects', JSON.stringify(next))
+      return next
+    })
+  }
+
+  const chartDataWithFill = allDataWithFill.filter(d => visibleSubjects.includes(d.subject))
+  const total = chartDataWithFill.reduce((sum, d) => sum + d.seconds, 0)
+
+  if (allData.length === 0) {
     return (
       <div className="flex items-center justify-center flex-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
         暂无数据
@@ -44,91 +80,119 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
   const elevatedBg = cssVar('--bg-elevated') || '#0f172a'
 
   return (
-    <div className="flex items-center flex-1 gap-5 min-h-0">
-      {/* Ring chart */}
-      <div className="w-52 h-52 flex-shrink-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={chartDataWithFill}
-              cx="50%"
-              cy="50%"
-              innerRadius={48}
-              outerRadius={72}
-              dataKey="seconds"
-              strokeWidth={0}
-            />
-            <Tooltip
-              contentStyle={{
-                background: tooltipBg,
-                border: `1px solid ${tooltipBorder}`,
-                borderRadius: '8px',
-                fontSize: '13px',
-              }}
-              formatter={(value: number) => [formatShortDuration(value), '时长']}
-              labelFormatter={(label: string) => `${getSubjectIcon(label)} ${label}`}
-            />
-            <text
-              x="50%"
-              y="48%"
-              textAnchor="middle"
-              dominantBaseline="middle"
-              fill={textColor}
-              fontSize="20"
-              fontWeight="bold"
-              className="tabular-nums"
-            >
-              {formatShortDuration(total)}
-            </text>
-            <text
-              x="50%"
-              y="64%"
-              textAnchor="middle"
-              dominantBaseline="middle"
-              fill={secondaryColor}
-              fontSize="11"
-            >
-              总计
-            </text>
-          </PieChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Legend */}
-      <div className="flex flex-col gap-2 flex-1">
-        {chartData.sort((a, b) => b.seconds - a.seconds).map((entry) => {
-          const pct = Math.round((entry.seconds / total) * 100)
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Toggle chips */}
+      <div className="flex flex-wrap gap-1.5 mb-2 flex-shrink-0">
+        {allData.sort((a, b) => { const order = ['物理','数学','英语','休闲','其他']; return order.indexOf(a.subject) - order.indexOf(b.subject); }).map(entry => {
+          const visible = visibleSubjects.includes(entry.subject)
+          const color = COLORS[entry.subject] || '#64748b'
           return (
-            <div key={entry.subject} className="flex items-center gap-2.5 text-sm">
-              <span className="text-base">{getSubjectIcon(entry.subject)}</span>
-              <span style={{ color: secondaryColor }} className="w-8">{entry.subject}</span>
-              <div
-                className="flex-1 h-1.5 rounded-full overflow-hidden"
-                style={{ background: elevatedBg }}
-              >
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${pct}%`,
-                    backgroundColor: COLORS[entry.subject] || '#64748b',
-                  }}
-                />
-              </div>
-              <span
-                className="tabular-nums w-14 text-right"
-                style={{ color: secondaryColor }}
-              >
-                {formatShortDuration(entry.seconds)}
-              </span>
-              <span
-                className="tabular-nums w-8 text-right"
-                style={{ color: mutedColor }}
-              >
-                {pct}%
-              </span>
-            </div>
+            <button
+              key={entry.subject}
+              onClick={() => toggleSubject(entry.subject)}
+              className="text-xs leading-none px-2 py-1 rounded-full transition-all"
+              style={{
+                background: visible ? color : 'transparent',
+                color: visible ? '#fff' : secondaryColor,
+                border: `1px solid ${color}`,
+                opacity: visible ? 1 : 0.45,
+              }}
+            >
+              {getSubjectIcon(entry.subject)} {entry.subject}
+            </button>
           )
         })}
+      </div>
+
+      {/* Ring chart + Legend */}
+      <div className="flex items-center flex-1 gap-5 min-h-0">
+        {/* Ring chart */}
+        <div className="w-52 h-52 flex-shrink-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={chartDataWithFill}
+                cx="50%"
+                cy="50%"
+                innerRadius={48}
+                outerRadius={72}
+                dataKey="seconds"
+                strokeWidth={0}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: tooltipBg,
+                  border: `1px solid ${tooltipBorder}`,
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                }}
+                formatter={(value: number) => [formatShortDuration(value), '时长']}
+                labelFormatter={(label: string) => `${getSubjectIcon(label)} ${label}`}
+              />
+              <text
+                x="50%"
+                y="48%"
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill={textColor}
+                fontSize="20"
+                fontWeight="bold"
+                className="tabular-nums"
+              >
+                {formatShortDuration(total)}
+              </text>
+              <text
+                x="50%"
+                y="64%"
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill={secondaryColor}
+                fontSize="11"
+              >
+                总计
+              </text>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Legend */}
+        <div className="flex flex-col gap-2 flex-1">
+          {allData.sort((a, b) => { const order = ['物理','数学','英语','休闲','其他']; return order.indexOf(a.subject) - order.indexOf(b.subject); })
+            .filter(e => visibleSubjects.includes(e.subject))
+            .map((entry) => {
+              const pct = Math.round((entry.seconds / total) * 100)
+              return (
+                <div key={entry.subject} className="flex items-center gap-2.5 text-sm">
+                  <span className="text-base">{getSubjectIcon(entry.subject)}</span>
+                  <span style={{ color: secondaryColor }} className="w-8">{entry.subject}</span>
+                  <div
+                    className="flex-1 h-1.5 rounded-full overflow-hidden"
+                    style={{ background: elevatedBg }}
+                  >
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${pct}%`,
+                        backgroundColor: COLORS[entry.subject] || '#64748b',
+                      }}
+                    />
+                  </div>
+                  <span
+                    className="tabular-nums w-14 text-right"
+                    style={{ color: secondaryColor }}
+                  >
+                    {formatShortDuration(entry.seconds)}
+                  </span>
+                  <span
+                    className="tabular-nums w-8 text-right"
+                    style={{ color: mutedColor }}
+                  >
+                    {pct}%
+                  </span>
+                </div>
+              )
+            })}
+        </div>
       </div>
     </div>
   )

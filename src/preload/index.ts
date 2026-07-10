@@ -37,6 +37,14 @@ const api = {
   // Actions
   reclassifySegment: (segmentId: number, newSubject: Subject): Promise<void> =>
     ipcRenderer.invoke('reclassify-segment', segmentId, newSubject),
+  reclassifyByTitle: (date: string, title: string, newSubject: Subject): Promise<void> =>
+    ipcRenderer.invoke('reclassify-by-title', date, title, newSubject),
+  reclassifyByTitleInRange: (date: string, startTime: string, endTime: string, title: string, newSubject: Subject): Promise<void> =>
+    ipcRenderer.invoke('reclassify-by-title-in-range', date, startTime, endTime, title, newSubject),
+  splitSegment: (segmentId: number, splitTime: string): Promise<void> =>
+    ipcRenderer.invoke('split-segment', segmentId, splitTime),
+  mergeAdjacentSegments: (id1: number, id2: number): Promise<boolean> =>
+    ipcRenderer.invoke('merge-adjacent-segments', id1, id2),
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('minimize-window'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('maximize-window'),
   closeWindow: (): Promise<void> => ipcRenderer.invoke('close-window'),
