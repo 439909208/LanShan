@@ -6,6 +6,7 @@ interface LanshanApi {
   getTraySubject: () => Promise<string | null>
   setTraySubject: (subject: string | null) => Promise<void>
   getDailyStats: (date: string) => Promise<any[]>
+  rebuildDailyStats: (date: string) => Promise<void>
   getTotalSecondsToday: (date: string) => Promise<number>
   getConsecutiveDays: () => Promise<number>
   getMaxConsecutiveDays: () => Promise<number>
@@ -37,8 +38,6 @@ interface LanshanApi {
   setAutoStart: (enable: boolean) => Promise<void>
   exportData: () => Promise<boolean>
   syncNow: () => Promise<boolean>
-  exportRules: () => Promise<string>
-  importRules: () => Promise<number>
 }
 
 declare global {

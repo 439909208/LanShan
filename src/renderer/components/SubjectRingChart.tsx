@@ -10,6 +10,8 @@ const COLORS: Record<string, string> = {
   '其他': '#9ca3af',
 }
 
+const ALL_SUBJECTS = ['物理', '数学', '英语', '休闲', '其他']
+
 interface RingChartProps {
   data: { subject: string; seconds: number }[]
 }
@@ -21,13 +23,18 @@ function cssVar(name: string): string {
 }
 
 export default function SubjectRingChart({ data }: RingChartProps): React.ReactElement {
-  const allData = data.filter(d => d.seconds > 0)
-  const allDataWithFill = allData.map(d => ({
+  // Ensure all 5 subjects are always present
+  const merged = ALL_SUBJECTS.map(s => {
+    const found = data.find(d => d.subject === s)
+    return found || { subject: s, seconds: 0 }
+  })
+  const allData = merged
+  const allDataWithFill = merged.map(d => ({
     ...d,
     fill: COLORS[d.subject] || '#64748b',
   }))
 
-  const allLabels = allData.map(d => d.subject)
+  const allLabels = ALL_SUBJECTS
   const [visibleSubjects, setVisibleSubjects] = useState<string[]>([])
 
   // data 加载后从 localStorage 恢复 toggle 状态
@@ -61,10 +68,10 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
     })
   }
 
-  const chartDataWithFill = allDataWithFill.filter(d => visibleSubjects.includes(d.subject))
+  const chartDataWithFill = allDataWithFill.filter(d => visibleSubjects.includes(d.subject) && d.seconds > 0)
   const total = chartDataWithFill.reduce((sum, d) => sum + d.seconds, 0)
 
-  if (allData.length === 0) {
+  if (data.length === 0) {
     return (
       <div className="flex items-center justify-center flex-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
         暂无数据
@@ -83,13 +90,13 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
     <div className="flex flex-col flex-1 min-h-0">
       {/* Toggle chips */}
       <div className="flex flex-wrap gap-1.5 mb-2 flex-shrink-0">
-        {allData.sort((a, b) => { const order = ['物理','数学','英语','休闲','其他']; return order.indexOf(a.subject) - order.indexOf(b.subject); }).map(entry => {
-          const visible = visibleSubjects.includes(entry.subject)
-          const color = COLORS[entry.subject] || '#64748b'
+        {ALL_SUBJECTS.map(s => {
+          const visible = visibleSubjects.includes(s)
+          const color = COLORS[s] || '#64748b'
           return (
             <button
-              key={entry.subject}
-              onClick={() => toggleSubject(entry.subject)}
+              key={s}
+              onClick={() => toggleSubject(s)}
               className="text-xs leading-none px-2 py-1 rounded-full transition-all"
               style={{
                 background: visible ? color : 'transparent',
@@ -98,7 +105,7 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
                 opacity: visible ? 1 : 0.45,
               }}
             >
-              {getSubjectIcon(entry.subject)} {entry.subject}
+              {getSubjectIcon(s)} {s}
             </button>
           )
         })}
@@ -157,10 +164,10 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
 
         {/* Legend */}
         <div className="flex flex-col gap-2 flex-1">
-          {allData.sort((a, b) => { const order = ['物理','数学','英语','休闲','其他']; return order.indexOf(a.subject) - order.indexOf(b.subject); })
-            .filter(e => visibleSubjects.includes(e.subject))
-            .map((entry) => {
-              const pct = Math.round((entry.seconds / total) * 100)
+          {ALL_SUBJECTS.filter(s => visibleSubjects.includes(s)).map((s) => {
+            const entry = allData.find(d => d.subject === s)!
+            if (entry.seconds === 0) return null
+            const pct = total > 0 ? Math.round((entry.seconds / total) * 100) : 0
               return (
                 <div key={entry.subject} className="flex items-center gap-2.5 text-sm">
                   <span className="text-base">{getSubjectIcon(entry.subject)}</span>

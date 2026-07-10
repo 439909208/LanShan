@@ -242,6 +242,19 @@ export async function syncFullToday(): Promise<void> {
   const totalSec = segs.reduce((s, seg) => s + seg.duration, 0)
   console.log('[sync-full] Merged segments:', segs.length, 'total:', totalSec, 's =', Math.round(totalSec / 60), 'min')
 
+  // DIAG: English total by title — find what contributes the extra minutes
+  const engTitles = db.exec(
+    "SELECT title, COALESCE(SUM(duration),0) as sec FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject = '英语' GROUP BY title ORDER BY sec DESC",
+    getUTCRange(today)
+  )
+  if (engTitles && engTitles[0]) {
+    const parts: string[] = []
+    for (const row of engTitles[0].values) {
+      parts.push('"' + (row[0] as string).substring(0, 60) + '":' + Math.round((row[1] as number) / 60) + 'min')
+    }
+    console.log('[sync-full] 英语 by title:', parts.join(', '))
+  }
+
   save()
 }
 

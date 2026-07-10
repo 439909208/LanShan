@@ -12,6 +12,7 @@ const api = {
 
   // Stats
   getDailyStats: (date: string): Promise<any[]> => ipcRenderer.invoke('get-daily-stats', date),
+  rebuildDailyStats: (date: string): Promise<void> => ipcRenderer.invoke('rebuild-daily-stats', date),
   getTotalSecondsToday: (date: string): Promise<number> => ipcRenderer.invoke('get-total-seconds-today', date),
   getConsecutiveDays: (): Promise<number> => ipcRenderer.invoke('get-consecutive-days'),
   getMaxConsecutiveDays: (): Promise<number> => ipcRenderer.invoke('get-max-consecutive-days'),

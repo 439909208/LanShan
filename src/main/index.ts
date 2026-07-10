@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
-import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject } from './database'
+import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange } from './database'
 import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
@@ -69,6 +69,20 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('get-daily-stats', (_event, date: string) => getDailyStats(date))
+  ipcMain.handle('rebuild-daily-stats', (_event, date: string) => {
+    const db = getDb()
+    const [utcStart, utcEnd] = getUTCRange(date)
+    db?.run('DELETE FROM daily_stats WHERE date = ?', [date])
+    const sums = db?.exec(
+      "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject",
+      [utcStart, utcEnd]
+    )
+    if (sums && sums[0]) {
+      for (const row of sums[0].values) {
+        updateDailyStats(date, row[0] as Subject, row[1] as number)
+      }
+    }
+  })
   ipcMain.handle('get-total-seconds-today', (_event, date: string) => getTotalSecondsToday(date))
   ipcMain.handle('get-consecutive-days', () => getConsecutiveDays())
   ipcMain.handle('get-max-consecutive-days', () => getMaxConsecutiveDays())

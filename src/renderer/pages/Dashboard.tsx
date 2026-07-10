@@ -28,6 +28,9 @@ interface SubjectProgress {
 
 export default function Dashboard(): React.ReactElement {
   const navigate = useNavigate()
+  const todayStr = new Date().toLocaleDateString('sv-SE')
+  const [selectedDate, setSelectedDate] = useState(todayStr)
+  const isToday = selectedDate === todayStr
   const [coreSubjects, setCoreSubjects] = useState<string[]>([])
   const [progress, setProgress] = useState<SubjectProgress[]>([])
   const [totalToday, setTotalToday] = useState(0)
@@ -41,6 +44,7 @@ export default function Dashboard(): React.ReactElement {
 
   useEffect(() => {
     loadData()
+    if (!isToday) return
     const dataInterval = setInterval(loadData, 30000)
     const unlockInterval = setInterval(async () => {
       const ids = await window.lanshan.getNewUnlocks()
@@ -52,16 +56,17 @@ export default function Dashboard(): React.ReactElement {
       clearInterval(dataInterval)
       clearInterval(unlockInterval)
     }
-  }, [])
+  }, [selectedDate])
 
   async function loadData(): Promise<void> {
     try {
-      const today = new Date().toISOString().split('T')[0]
+      // Rebuild daily_stats for past dates (fixes missing 休闲/其他)
+      if (!isToday) await window.lanshan.rebuildDailyStats(selectedDate)
       const settings = await window.lanshan.getSettings()
       const [coreList, stats, totalTodayVal, consec, maxConsec, totalAll, week, prevWeek, achievements] = await Promise.all([
         window.lanshan.getCoreSubjects(),
-        window.lanshan.getDailyStats(today),
-        window.lanshan.getTotalSecondsToday(today),
+        window.lanshan.getDailyStats(selectedDate),
+        window.lanshan.getTotalSecondsToday(selectedDate),
         window.lanshan.getConsecutiveDays(),
         window.lanshan.getMaxConsecutiveDays(),
         window.lanshan.getTotalSecondsAllTime(),
@@ -107,7 +112,37 @@ export default function Dashboard(): React.ReactElement {
   }
 
   return (
-    <div className="w-full h-full">
+    <div className="w-full h-full flex flex-col">
+      {/* 日期导航 */}
+      <div className="flex items-center gap-3 px-1 py-2 flex-shrink-0">
+        <button onClick={() => {
+          const d = new Date(selectedDate); d.setDate(d.getDate() - 1);
+          setSelectedDate(d.toLocaleDateString('sv-SE'))
+        }} className="px-3 py-1 rounded-lg text-sm font-medium hover:opacity-70"
+          style={{ background:'var(--bg-elevated)', color:'var(--text-primary)', border:'1px solid var(--border-light)' }}>
+          ◀
+        </button>
+        <input type="date" value={selectedDate}
+          onChange={e => { const v = e.target.value; if (v <= todayStr) setSelectedDate(v) }}
+          max={todayStr}
+          className="rounded-lg px-3 py-1.5 text-sm" style={{ background:'var(--bg-elevated)', color:'var(--text-primary)', border:'1px solid var(--border-light)' }} />
+        <button onClick={() => {
+          const d = new Date(selectedDate); d.setDate(d.getDate() + 1);
+          const next = d.toLocaleDateString('sv-SE');
+          if (next <= todayStr) setSelectedDate(next)
+        }} disabled={isToday}
+          className="px-3 py-1 rounded-lg text-sm font-medium hover:opacity-70 disabled:opacity-30"
+          style={{ background:'var(--bg-elevated)', color:'var(--text-primary)', border:'1px solid var(--border-light)' }}>
+          ▶
+        </button>
+        {!isToday && (
+          <button onClick={() => setSelectedDate(todayStr)}
+            className="px-3 py-1 rounded-lg text-sm font-medium"
+            style={{ background:'var(--accent)', color:'white' }}>
+            今天
+          </button>
+        )}
+      </div>
       <div className="grid grid-cols-3 gap-5 h-full">
         {/* 左侧：环形图(2/5) + 热力图(2/5) + 成就(1/5) */}
         <div className="flex flex-col gap-5 h-full overflow-y-auto">
@@ -148,7 +183,7 @@ export default function Dashboard(): React.ReactElement {
         <div className="col-span-2 flex flex-col gap-5">
           <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.5' }}>
             <div className="grid grid-cols-3 gap-5 flex-1 pt-3">
-              <MiniCard icon="📊" value={formatDuration(totalToday)} label="今日学习" />
+              <MiniCard icon="📊" value={formatDuration(totalToday)} label={isToday ? '今日学习' : selectedDate + ' 学习'} />
               <MiniCard icon="🔥" value={`${consecutiveDays} 天`} label="连续打卡" sub={`最长 ${maxConsecutive} 天`} />
               <MiniCard icon="🏆" value={formatShortDuration(totalAllTime)} label="累计总时长" />
             </div>
@@ -172,9 +207,9 @@ export default function Dashboard(): React.ReactElement {
           </div>
           <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.2' }}>
             <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
-              🕐 今日时间轴
+              🕐 {isToday ? '今日时间轴' : selectedDate + ' 时间轴'}
             </h3>
-            <Timeline date={new Date().toISOString().split('T')[0]} />
+            <Timeline date={selectedDate} />
           </div>
         </div>
       </div>
