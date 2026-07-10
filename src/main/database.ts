@@ -377,6 +377,14 @@ export function getSettings(): Record<string, string> {
   return settings
 }
 
+/** 将本地日期（如 2026-07-10）转换为 UTC 时间范围，用于查询 raw_events 中的 UTC ISO 时间戳 */
+export function getUTCRange(localDate: string): [string, string] {
+  const start = new Date(`${localDate}T00:00:00+08:00`).toISOString()
+  const end = new Date(`${localDate}T00:00:00+08:00`)
+  end.setDate(end.getDate() + 1)
+  return [start, end.toISOString()]
+}
+
 export function getTargetSeconds(subject: Subject): number {
   const val = getSetting(`target_${subject}`)
   return val ? parseInt(val, 10) : 7200
@@ -449,7 +457,9 @@ export function reclassifyRawEventsByKeyword(keyword: string, newSubject: Subjec
 
 export function insertRawEvent(event: Omit<RawEvent, 'id'>): void {
   db?.run(
-    'INSERT OR IGNORE INTO raw_events (aw_id, timestamp, duration, app, title, url, subject) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    `INSERT INTO raw_events (aw_id, timestamp, duration, app, title, url, subject)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(aw_id) DO UPDATE SET subject = excluded.subject`,
     [event.aw_id, event.timestamp.toISOString(), event.duration, event.app, event.title, event.url, event.subject]
   )
 }
@@ -531,7 +541,8 @@ export function getDailyBreakdown(date: string): {
 }
 
 export function getTotalSecondsToday(date: string): number {
-  const result = db?.exec("SELECT COALESCE(SUM(duration), 0) FROM raw_events WHERE date(timestamp) = ? AND subject IN ('物理','数学','英语')", [date])
+  const [start, end] = getUTCRange(date)
+  const result = db?.exec("SELECT COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IN ('物理','数学','英语')", [start, end])
   if (result && result.length > 0 && result[0].values[0]) {
     return result[0].values[0][0] as number
   }
@@ -1167,7 +1178,7 @@ export function countDawnDuskDays(): number {
 
 /** 有连续学习段 ≥ minSeconds 的天数 */
 export function countFocusDays(minSeconds: number): number {
-  const r = db?.exec('SELECT COUNT(DISTINCT date) FROM merged_segments WHERE duration >= ? AND subject NOT IN (\'休闲\',\'未分类\',\'其他\')', [minSeconds])
+  const r = db?.exec('SELECT COUNT(DISTINCT date) FROM merged_segments WHERE duration >= ? AND subject NOT IN (\'休闲\',\'其他\')', [minSeconds])
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 

@@ -15,6 +15,7 @@ import {
   getSetting,
   setSetting,
   getMergedSegments,
+  getUTCRange,
 } from './database'
 
 let syncInterval: ReturnType<typeof setInterval> | null = null
@@ -126,8 +127,8 @@ export async function syncActivityWatch(): Promise<void> {
   // Update daily_stats from raw_events (don't rebuild merged_segments — would overwrite manual split/merge)
   if (minNewTime && maxNewTime) {
     const sums = db.exec(
-      'SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE date(timestamp) = ? AND subject IS NOT NULL GROUP BY subject',
-      [today]
+      'SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject',
+      getUTCRange(today)
     )
     if (sums && sums[0]) {
       for (const row of sums[0].values) {
@@ -158,8 +159,8 @@ export async function syncFullToday(): Promise<void> {
   const db = getDb()
   clearMergedSegments(today)
   db?.run("DELETE FROM daily_stats WHERE date = ?", [today])
-  // 清除所有历史 daily_stats 中的非核心科目脏数据
-  db?.run("DELETE FROM daily_stats WHERE subject NOT IN ('物理','数学','英语')")
+  // 清除今天 daily_stats 中的非核心科目脏数据
+  db?.run("DELETE FROM daily_stats WHERE date = ? AND subject NOT IN ('物理','数学','英语')", [today])
 
   console.log('[sync-full] Fetching from', start, 'to', end)
 
@@ -209,8 +210,8 @@ export async function syncFullToday(): Promise<void> {
 
   // 对兜底分类（其他/未分类）的 raw_events 用最新规则重新分类，不影响用户手动修改的科目
   const fallbackRows = db.exec(
-    "SELECT aw_id, title, app, url FROM raw_events WHERE date(timestamp) = ? AND subject IN ('其他', '未分类')",
-    [today]
+    "SELECT aw_id, title, app, url FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IN ('其他', '未分类')",
+    getUTCRange(today)
   )
   if (fallbackRows && fallbackRows[0]) {
     let reclassified = 0
@@ -222,7 +223,16 @@ export async function syncFullToday(): Promise<void> {
         reclassified++
       }
     }
-    if (reclassified > 0) console.log('[sync-full] reclassified', reclassified, 'fallback raw_events')
+    if (reclassified > 0) {
+      console.log('[sync-full] reclassified', reclassified, 'fallback raw_events')
+      // 打印按科目的分布
+      const dist = db.exec("SELECT subject, COUNT(*) as cnt FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject NOT IN ('其他', '未分类') GROUP BY subject ORDER BY cnt DESC", getUTCRange(today))
+      if (dist && dist[0]) {
+        for (const row of dist[0].values) {
+          console.log('  ', row[0], ':', row[1], 'events')
+        }
+      }
+    }
   }
 
   // Full rebuild from ALL raw_events — restores any data eaten by previous rebuild-in-range bugs
@@ -247,7 +257,7 @@ export function rebuildMergedSegments(date: string): void {
     FROM raw_events
     WHERE timestamp >= ? AND timestamp < ?
     ORDER BY timestamp ASC
-  `, [date, getNextDate(date)])
+  `, getUTCRange(date))
 
   if (!result || result.length === 0) return
 
@@ -295,8 +305,8 @@ export function rebuildMergedSegments(date: string): void {
   // Calculate daily_stats directly from raw_events for accurate per-subject totals
   // (merged segments may absorb fragments across subjects for display purposes)
   const rawTotals = db.exec(
-    "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE date(timestamp) = ? AND subject IS NOT NULL GROUP BY subject",
-    [date]
+    "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject",
+    getUTCRange(date)
   )
   if (rawTotals && rawTotals[0]) {
     for (const row of rawTotals[0].values) {
