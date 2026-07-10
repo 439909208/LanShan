@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
-import { initDatabase, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject } from './database'
+import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject } from './database'
 import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
@@ -108,6 +108,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle('delete-classification-rule', (_event, id: number) => {
     deleteClassificationRule(id)
   })
+  ipcMain.handle('export-rules', () => exportRules())
+  ipcMain.handle('import-rules', () => importRules())
   ipcMain.handle('set-auto-start', (_event, enable: boolean) => {
     app.setLoginItemSettings({ openAtLogin: enable })
   })

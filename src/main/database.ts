@@ -1,14 +1,17 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 
 let db: SqlJsDatabase | null = null
-const DB_PATH = join(app.getPath('userData'), 'lanshan.db')
+const DATA_DIR = join(app.getPath('home'), '澜山数据')
+const DB_PATH = join(DATA_DIR, 'lanshan.db')
+const OLD_DB_PATH = join(app.getPath('userData'), 'lanshan.db')
+const BACKUP_DIR = join(DATA_DIR, 'backups')
 
-export type Subject = '物理' | '数学' | '英语' | '化学' | '生物' | '语文' | '娱乐' | '未分类'
+export type Subject = '物理' | '数学' | '英语' | '化学' | '生物' | '语文' | '休闲' | '其他' | '未分类'
 
-export const SUBJECTS: Subject[] = ['物理', '数学', '英语', '化学', '生物', '语文', '娱乐', '未分类']
+export const SUBJECTS: Subject[] = ['物理', '数学', '英语', '化学', '生物', '语文', '休闲', '其他', '未分类']
 export const CORE_SUBJECTS: Subject[] = ['物理', '数学', '英语']
 
 export interface RawEvent {
@@ -48,7 +51,7 @@ export interface ClassificationRule {
   id?: number
   subject: Subject
   keyword: string
-  match_field: 'title' | 'app' | 'url'
+  match_field: 'title' | 'app' | 'url' | 'all'
   priority: number
 }
 
@@ -65,24 +68,24 @@ export interface Settings {
 }
 
 const DEFAULT_RULES: Omit<ClassificationRule, 'id'>[] = [
-  { subject: '物理', keyword: '夏梦迪', match_field: 'title', priority: 10 },
-  { subject: '物理', keyword: '赵玉峰', match_field: 'title', priority: 10 },
-  { subject: '物理', keyword: '黄夫人', match_field: 'title', priority: 10 },
-  { subject: '物理', keyword: '物理', match_field: 'title', priority: 5 },
-  { subject: '数学', keyword: '小火车', match_field: 'title', priority: 10 },
-  { subject: '数学', keyword: 'Tomath', match_field: 'title', priority: 10 },
-  { subject: '数学', keyword: '凉学长', match_field: 'title', priority: 10 },
-  { subject: '数学', keyword: '一数', match_field: 'title', priority: 10 },
-  { subject: '数学', keyword: '数学', match_field: 'title', priority: 5 },
-  { subject: '英语', keyword: '陶然', match_field: 'title', priority: 10 },
-  { subject: '英语', keyword: 'FREE高考英语', match_field: 'title', priority: 10 },
-  { subject: '英语', keyword: '英语', match_field: 'title', priority: 5 },
-  { subject: '英语', keyword: 'English', match_field: 'title', priority: 5 },
-  { subject: '英语', keyword: '词汇', match_field: 'title', priority: 5 },
-  { subject: '英语', keyword: '单词', match_field: 'title', priority: 5 },
-  { subject: '娱乐', keyword: 'steam', match_field: 'app', priority: 10 },
-  { subject: '娱乐', keyword: '游戏', match_field: 'title', priority: 10 },
-  { subject: '娱乐', keyword: '抖音', match_field: 'title', priority: 10 },
+  { subject: '物理', keyword: '夏梦迪', match_field: 'all', priority: 10 },
+  { subject: '物理', keyword: '赵玉峰', match_field: 'all', priority: 10 },
+  { subject: '物理', keyword: '黄夫人', match_field: 'all', priority: 10 },
+  { subject: '物理', keyword: '物理', match_field: 'all', priority: 5 },
+  { subject: '数学', keyword: '小火车', match_field: 'all', priority: 10 },
+  { subject: '数学', keyword: 'Tomath', match_field: 'all', priority: 10 },
+  { subject: '数学', keyword: '凉学长', match_field: 'all', priority: 10 },
+  { subject: '数学', keyword: '一数', match_field: 'all', priority: 10 },
+  { subject: '数学', keyword: '数学', match_field: 'all', priority: 5 },
+  { subject: '英语', keyword: '陶然', match_field: 'all', priority: 10 },
+  { subject: '英语', keyword: 'FREE高考英语', match_field: 'all', priority: 10 },
+  { subject: '英语', keyword: '英语', match_field: 'all', priority: 5 },
+  { subject: '英语', keyword: 'English', match_field: 'all', priority: 5 },
+  { subject: '英语', keyword: '词汇', match_field: 'all', priority: 5 },
+  { subject: '英语', keyword: '单词', match_field: 'all', priority: 5 },
+  { subject: '休闲', keyword: 'steam', match_field: 'app', priority: 10 },
+  { subject: '休闲', keyword: '游戏', match_field: 'all', priority: 10 },
+  { subject: '休闲', keyword: '抖音', match_field: 'all', priority: 10 },
 ]
 
 const DEFAULT_SETTINGS: Record<string, string | number | boolean> = {
@@ -103,7 +106,19 @@ const DEFAULT_SETTINGS: Record<string, string | number | boolean> = {
 
 export async function initDatabase(): Promise<void> {
   const SQL = await initSqlJs()
-  
+
+  // Ensure data directory exists
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true })
+  }
+
+  // Migrate old database if legacy location exists but new doesn't
+  if (existsSync(OLD_DB_PATH) && !existsSync(DB_PATH)) {
+    const buf = readFileSync(OLD_DB_PATH)
+    writeFileSync(DB_PATH, buf)
+    console.log('[db] Migrated from', OLD_DB_PATH)
+  }
+
   if (existsSync(DB_PATH)) {
     const buffer = readFileSync(DB_PATH)
     db = new SQL.Database(buffer)
@@ -146,6 +161,13 @@ export async function initDatabase(): Promise<void> {
   seedDefaults()
   cleanupOldUnclassified()
   migrateAchievementsV2()
+
+  // Migrate old '娱乐' subject data to '休闲' (v3)
+  db?.run("UPDATE merged_segments SET subject = '休闲' WHERE subject = '娱乐'")
+  db?.run("UPDATE raw_events SET subject = '休闲' WHERE subject = '娱乐'")
+  db?.run("UPDATE daily_stats SET subject = '休闲' WHERE subject = '娱乐'")
+  db?.run("UPDATE classification_rules SET subject = '休闲' WHERE subject = '娱乐'")
+
   save()
 }
 
@@ -317,6 +339,15 @@ export function save(): void {
   if (!db) return
   const data = db.export()
   const buffer = Buffer.from(data)
+
+  // Daily backup — write once per day, keep forever
+  if (!existsSync(BACKUP_DIR)) mkdirSync(BACKUP_DIR, { recursive: true })
+  const today = new Date().toISOString().split('T')[0]
+  const backupPath = join(BACKUP_DIR, `lanshan-${today}.db`)
+  if (!existsSync(backupPath)) {
+    writeFileSync(backupPath, buffer)
+  }
+
   writeFileSync(DB_PATH, buffer)
 }
 
@@ -370,7 +401,7 @@ export function getClassificationRules(): ClassificationRule[] {
     id: row[0] as number,
     subject: row[1] as Subject,
     keyword: row[2] as string,
-    match_field: row[3] as 'title' | 'app' | 'url',
+    match_field: row[3] as 'title' | 'app' | 'url' | 'all',
     priority: row[4] as number,
   }))
 }
@@ -464,7 +495,7 @@ export function getDailyBreakdown(date: string): {
 }
 
 export function getTotalSecondsToday(date: string): number {
-  const result = db?.exec('SELECT COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ?', [date])
+  const result = db?.exec("SELECT COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND subject IN ('物理','数学','英语') AND is_exploded = 0", [date])
   if (result && result.length > 0 && result[0].values[0]) {
     return result[0].values[0][0] as number
   }
@@ -487,16 +518,18 @@ export function reclassifySegment(segmentId: number, newSubject: Subject): void 
     [newSubject, date, title, app]
   )
 
-  // Add a temp classification rule so future entries with this title auto-classify
-  const existing = db?.exec(
-    'SELECT id FROM classification_rules WHERE keyword = ? AND match_field = ?',
-    [title, 'title']
-  )
-  if (!existing || existing.length === 0 || existing[0].values.length === 0) {
-    db?.run(
-      'INSERT INTO classification_rules (subject, keyword, match_field, priority) VALUES (?, ?, ?, ?)',
-      [newSubject, title, 'title', 8]
+  // Add a temp classification rule (skip for '未分类' and '其他' — those are fallbacks, not real classifications)
+  if (newSubject !== '未分类' && newSubject !== '其他') {
+    const existing = db?.exec(
+      "SELECT id FROM classification_rules WHERE keyword = ? AND (match_field = 'all' OR match_field = 'title')",
+      [title]
     )
+    if (!existing || existing.length === 0 || existing[0].values.length === 0) {
+      db?.run(
+        "INSERT INTO classification_rules (subject, keyword, match_field, priority) VALUES (?, ?, 'all', ?)",
+        [newSubject, title, 8]
+      )
+    }
   }
 
   save()
@@ -713,7 +746,8 @@ export function getAchievementProgress(): AchievementInfo[] {
         progress = countFocusDays(120 * 60); break
       case 'focus-3h-3':
         progress = countFocusDays(180 * 60); break
-      case 'comeback-6h': case 'comeback-8h': progress = 0; break
+      case 'comeback-6h': progress = countComebackDays(6 * 3600); break
+      case 'comeback-8h': progress = countComebackDays(8 * 3600); break
       case 'burst-phy': progress = countBurstDays('物理', 240 * 60) >= 1 ? 1 : 0; break
       case 'burst-math': progress = countBurstDays('数学', 240 * 60) >= 1 ? 1 : 0; break
       case 'burst-eng': progress = countBurstDays('英语', 240 * 60) >= 1 ? 1 : 0; break
@@ -769,6 +803,12 @@ export function checkAndUnlockAchievements(): string[] {
 
   const now = new Date().toISOString()
 
+  // Grand slam count for triple-over — count of days all 3 subjects exceeded
+  const grandSlam = db?.exec(
+    "SELECT COUNT(*) FROM (SELECT date FROM daily_stats WHERE subject IN ('物理','数学','英语') AND exceeded = 1 GROUP BY date HAVING COUNT(*) >= 3)"
+  )
+  const grandSlamCount = (grandSlam?.[0]?.values?.[0]?.[0] as number) || 0
+
   for (const row of rows[0].values) {
     const id = row[0] as string
     const unlocked = Boolean(row[1])
@@ -796,9 +836,23 @@ export function checkAndUnlockAchievements(): string[] {
       case 'over-phy-10': shouldUnlock = countOverachieveDays('物理') >= 10; break
       case 'over-math-10': shouldUnlock = countOverachieveDays('数学') >= 10; break
       case 'over-eng-10': shouldUnlock = countOverachieveDays('英语') >= 10; break
-      case 'triple-over':
-        shouldUnlock = ['物理','数学','英语'].every(s => todayMap[s] && todayMap[s] >= getTargetSeconds(s as Subject) * 1.5)
-        break
+      case 'morning-5': shouldUnlock = countMorningDays() >= 5; break
+      case 'morning-10': shouldUnlock = countMorningDays() >= 10; break
+      case 'morning-18': shouldUnlock = countMorningDays() >= 18; break
+      case 'night-5': shouldUnlock = countNightDays() >= 5; break
+      case 'night-10': shouldUnlock = countNightDays() >= 10; break
+      case 'night-18': shouldUnlock = countNightDays() >= 18; break
+      case 'focus-2h-3': shouldUnlock = countFocusDays(120 * 60) >= 3; break
+      case 'focus-2h-7': shouldUnlock = countFocusDays(120 * 60) >= 7; break
+      case 'focus-3h-3': shouldUnlock = countFocusDays(180 * 60) >= 3; break
+      case 'comeback-6h': shouldUnlock = countComebackDays(6 * 3600) >= 1; break
+      case 'comeback-8h': shouldUnlock = countComebackDays(8 * 3600) >= 1; break
+      case 'burst-phy': shouldUnlock = countBurstDays('物理', 240 * 60) >= 1; break
+      case 'burst-math': shouldUnlock = countBurstDays('数学', 240 * 60) >= 1; break
+      case 'burst-eng': shouldUnlock = countBurstDays('英语', 240 * 60) >= 1; break
+      case 'balanced': shouldUnlock = countBalancedDays() >= 1; break
+      case 'dawn-dusk': shouldUnlock = countDawnDuskDays() >= 1; break
+      case 'triple-over': shouldUnlock = grandSlamCount >= 1; break
       case 'triple-3': shouldUnlock = countConsecutiveTripleDays() >= 3; break
     }
 
@@ -855,23 +909,23 @@ export function getPendingUnlocks(): string[] {
 
 /** 晨行天数：首段学习 < 07:00 */
 export function countMorningDays(): number {
-  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('娱乐','未分类')`)
+  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','未分类','其他')`)
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 
 /** 夜航天数：末段学习 > 22:00 */
 export function countNightDays(): number {
-  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('娱乐','未分类')`)
+  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','未分类','其他')`)
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 
 /** 朝暮行天数：同一天同时满足晨行+夜航 */
 export function countDawnDuskDays(): number {
   const morning = new Set<string>()
-  const mr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('娱乐','未分类')`)
+  const mr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','未分类','其他')`)
   if (mr) for (const r of mr[0]?.values || []) morning.add(r[0] as string)
   const night = new Set<string>()
-  const nr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('娱乐','未分类')`)
+  const nr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','未分类','其他')`)
   if (nr) for (const r of nr[0]?.values || []) night.add(r[0] as string)
   let count = 0
   for (const d of morning) { if (night.has(d)) count++ }
@@ -880,7 +934,7 @@ export function countDawnDuskDays(): number {
 
 /** 有连续学习段 ≥ minSeconds 的天数 */
 export function countFocusDays(minSeconds: number): number {
-  const r = db?.exec('SELECT COUNT(DISTINCT date) FROM merged_segments WHERE duration >= ? AND subject NOT IN (\'娱乐\',\'未分类\')', [minSeconds])
+  const r = db?.exec('SELECT COUNT(DISTINCT date) FROM merged_segments WHERE duration >= ? AND subject NOT IN (\'休闲\',\'未分类\',\'其他\')', [minSeconds])
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 
@@ -900,6 +954,38 @@ export function countBurstDays(subject: string, minSeconds: number): number {
 export function countBalancedDays(): number {
   const r = db?.exec(`SELECT COUNT(*) FROM (SELECT date FROM daily_stats WHERE subject IN ('物理','数学','英语') GROUP BY date HAVING SUM(CASE WHEN achieved=1 AND exceeded=0 THEN 1 ELSE 0 END)=3)`)
   return (r?.[0]?.values?.[0]?.[0] as number) || 0
+}
+
+/** 逆袭天数：当天学习 >= minSeconds 且前一天学习 < 1h（或没有记录） */
+export function countComebackDays(minSeconds: number): number {
+  const r = db?.exec(`
+    SELECT COUNT(DISTINCT a.date) FROM daily_stats a
+    WHERE a.total_seconds >= ?
+    AND NOT EXISTS (
+      SELECT 1 FROM daily_stats b
+      WHERE b.date = date(a.date, '-1 day')
+      AND b.total_seconds >= 3600
+    )
+  `, [minSeconds])
+  return (r?.[0]?.values?.[0]?.[0] as number) || 0
+}
+
+export function exportRules(): string {
+  const rules = getClassificationRules()
+  const file = join(DATA_DIR, 'classification-rules.json')
+  writeFileSync(file, JSON.stringify(rules, null, 2), 'utf-8')
+  return file
+}
+
+export function importRules(): number {
+  const file = join(DATA_DIR, 'classification-rules.json')
+  if (!existsSync(file)) return 0
+  const rules: ClassificationRule[] = JSON.parse(readFileSync(file, 'utf-8'))
+  for (const r of rules) {
+    if (!r.keyword) continue
+    addClassificationRule(r.subject, r.keyword, r.match_field || 'all', r.priority || 5)
+  }
+  return rules.length
 }
 
 export function closeDatabase(): void {

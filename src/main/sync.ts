@@ -20,7 +20,7 @@ import {
 let syncInterval: ReturnType<typeof setInterval> | null = null
 
 const SYNC_INTERVAL_MS = 30_000  // every 30 seconds
-const MERGE_GAP_SECONDS = 120      // 2 minutes gap allowed for merging
+const MERGE_GAP_SECONDS = 300      // 5 minutes — same-subject events within this gap merge into one segment
 const NOISE_THRESHOLD_SECONDS = 30 // skip events shorter than 30s
 const GAP_SECONDS = 300            // 5 min gap = blank space
 const INTERLUDE_THRESHOLD = 300    // 5 min non-study = interlude
@@ -135,6 +135,7 @@ export async function syncFullToday(): Promise<void> {
       noiseDropped++
       continue
     }
+
     const title = awEvent.data?.title || ''
     const app = awEvent.data?.app || ''
     const url = awEvent.data?.url || null
@@ -198,20 +199,31 @@ export function rebuildMergedSegments(date: string): void {
 
   // Merge algorithm
   const merged = mergeSegments(rows)
+
+  // Clear old merged segments for this date
+  clearMergedSegments(date)
   
-  // Insert merged segments
+  // Insert parent segments + exploded children
   for (const segment of merged) {
-    insertMergedSegment({
-      date,
-      start_time: segment.start_time,
-      end_time: segment.end_time,
-      duration: segment.duration,
-      subject: segment.subject,
-      title: segment.title,
-      app: segment.app,
-      is_exploded: false,
-      parent_id: null,
-    })
+    const safeTitle = String(segment.title ?? '')
+    const safeApp = String(segment.app ?? '')
+    db?.run(
+      'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)',
+      [date, segment.start_time, segment.end_time, segment.duration, segment.subject, safeTitle, safeApp]
+    )
+    if (segment.constituents.length > 1) {
+      const idRow = db?.exec('SELECT last_insert_rowid()')
+      const parentId = idRow?.[0]?.values?.[0]?.[0] as number
+      if (parentId != null) {
+        const stmt = db.prepare(
+          'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)'
+        )
+        for (const c of segment.constituents) {
+          stmt.run([date, segment.start_time, segment.end_time, c.duration, segment.subject, String(c.title ?? ''), String(c.app ?? ''), parentId])
+        }
+        stmt.free()
+      }
+    }
   }
 
   // Update daily stats for each subject
@@ -222,7 +234,7 @@ export function rebuildMergedSegments(date: string): void {
   }
 
   for (const [subject, totalSeconds] of subjectTotals) {
-    if (subject === '未分类') continue
+    if (subject === '未分类' || subject === '其他') continue
     updateDailyStats(date, subject, totalSeconds)
   }
 }
@@ -242,6 +254,7 @@ interface MergedEntry {
   subject: Subject
   title: string
   app: string
+  constituents: { title: string; app: string; duration: number }[]
 }
 
 function mergeSegments(entries: RawEntry[]): MergedEntry[] {
@@ -253,23 +266,27 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
     start: Date
     end: Date
     duration: number
-    titles: string[]
+    titleDurations: Map<string, number>
     apps: Set<string>
+    constituents: { title: string; app: string; duration: number }[]
   } | null = null
 
   const isStudy = (subject: Subject): boolean => {
-    return subject !== '娱乐' && subject !== '未分类'
+    return subject !== '休闲' && subject !== '未分类' && subject !== '其他'
   }
 
   for (const entry of entries) {
     if (current === null) {
+      const td = new Map<string, number>()
+      td.set(entry.title, entry.duration)
       current = {
         subject: entry.subject,
         start: entry.timestamp,
         end: new Date(entry.timestamp.getTime() + entry.duration * 1000),
         duration: entry.duration,
-        titles: [entry.title],
+        titleDurations: td,
         apps: new Set([entry.app]),
+        constituents: [{ title: entry.title, app: entry.app, duration: entry.duration }],
       }
       continue
     }
@@ -279,59 +296,76 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
     const currentIsStudy = isStudy(current.subject)
     const entryIsStudy = isStudy(entry.subject)
 
-    // Rule ①: Same subject + adjacent (< 2 min gap) → merge
+    // Rule: Same subject + adjacent (< 5 min gap) → merge
     if (current.subject === entry.subject && gap >= 0 && gap < MERGE_GAP_SECONDS * 1000) {
       current.end = entryEnd
       current.duration += entry.duration
-      if (!current.titles.includes(entry.title)) {
-        current.titles.push(entry.title)
-      }
+      current.titleDurations.set(entry.title, (current.titleDurations.get(entry.title) || 0) + entry.duration)
       current.apps.add(entry.app)
+      current.constituents.push({ title: entry.title, app: entry.app, duration: entry.duration })
       continue
     }
 
-    // Rule ④: Study segment with short non-study interlude (< 5 min) → keep merging (interlude hidden)
+    // Rule ④: Study segment + short non-study interlude (< 5 min) → absorb into study segment
     if (currentIsStudy && !entryIsStudy && gap >= 0 && gap < INTERLUDE_THRESHOLD * 1000 && entry.duration < INTERLUDE_THRESHOLD) {
-      // Extend current segment end time but don't add non-study duration
       current.end = entryEnd
-      current.duration += entry.duration // still count it, it's part of the time
+      current.duration += entry.duration   // short non-study counts toward study time
+      current.titleDurations.set(entry.title, (current.titleDurations.get(entry.title) || 0) + entry.duration)
+      current.apps.add(entry.app)
+      current.constituents.push({ title: entry.title, app: entry.app, duration: entry.duration })
       continue
     }
 
-    // Save current segment
+    // Save current segment — find the title with the longest total duration
+    let bestTitle = current.titleDurations.keys().next().value as string
+    let bestDur = 0
+    for (const [t, d] of current.titleDurations) {
+      if (d > bestDur) { bestDur = d; bestTitle = t }
+    }
     merged.push({
       start_time: current.start.toISOString(),
       end_time: current.end.toISOString(),
       duration: current.duration,
       subject: current.subject,
-      title: current.titles[0],
+      title: bestTitle,
       app: Array.from(current.apps)[0] || '',
+      constituents: current.constituents,
     })
 
     // Start new segment
+    const td2 = new Map<string, number>()
+    td2.set(entry.title, entry.duration)
     current = {
       subject: entry.subject,
       start: entry.timestamp,
       end: entryEnd,
       duration: entry.duration,
-      titles: [entry.title],
+      titleDurations: td2,
       apps: new Set([entry.app]),
+      constituents: [{ title: entry.title, app: entry.app, duration: entry.duration }],
     }
   }
 
   // Push last segment
   if (current) {
+    let bestTitle = current.titleDurations.keys().next().value as string
+    let bestDur = 0
+    for (const [t, d] of current.titleDurations) {
+      if (d > bestDur) { bestDur = d; bestTitle = t }
+    }
     merged.push({
       start_time: current.start.toISOString(),
       end_time: current.end.toISOString(),
       duration: current.duration,
       subject: current.subject,
-      title: current.titles[0],
+      title: bestTitle,
       app: Array.from(current.apps)[0] || '',
+      constituents: current.constituents,
     })
   }
 
-  return merged
+  // Post-process: drop segments shorter than 60 seconds
+  return merged.filter(s => s.duration >= 60)
 }
 
 function getNextDate(date: string): string {
@@ -340,7 +374,7 @@ function getNextDate(date: string): string {
   return d.toISOString().split('T')[0]
 }
 
-/** 娱乐超时提醒：检测娱乐连续时长 ≥ 阈值 → 系统通知 */
+/** 休闲超时提醒：检测休闲连续时长 ≥ 阈值 → 系统通知 */
 function checkEntertainmentReminder(): void {
   const enabled = getSetting('entertainment_reminder')
   if (enabled !== 'true') return
@@ -350,7 +384,7 @@ function checkEntertainmentReminder(): void {
   // 查今天娱乐合并段
   const segs = db.exec(
     'SELECT duration FROM merged_segments WHERE date = ? AND subject = ? ORDER BY start_time DESC LIMIT 1',
-    [today, '娱乐']
+    [today, '休闲']
   )
   if (!segs || segs.length === 0 || segs[0].values.length === 0) return
   const lastDuration = segs[0].values[0][0] as number

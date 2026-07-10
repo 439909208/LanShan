@@ -49,18 +49,30 @@ export function classifyEvent(
 
   // Step 1: 关键词匹配（优先级最高）
   for (const rule of rules) {
-    const target =
-      rule.match_field === 'title'
-        ? titleLower
-        : rule.match_field === 'app'
-          ? appLower
-          : urlLower
-
-    if (target.includes(rule.keyword.toLowerCase())) {
-      return {
-        subject: rule.subject,
-        method: 'keyword',
-        matchedKeyword: rule.keyword,
+    const kw = rule.keyword.toLowerCase()
+    if (rule.match_field === 'all') {
+      // 默认模式：在标题 + 进程名 + URL 中同时搜索
+      if (titleLower.includes(kw) || appLower.includes(kw) || urlLower.includes(kw)) {
+        return {
+          subject: rule.subject,
+          method: 'keyword',
+          matchedKeyword: rule.keyword,
+        }
+      }
+    } else {
+      // 限制模式：只在指定字段中搜索
+      const target =
+        rule.match_field === 'title'
+          ? titleLower
+          : rule.match_field === 'app'
+            ? appLower
+            : urlLower
+      if (target.includes(kw)) {
+        return {
+          subject: rule.subject,
+          method: 'keyword',
+          matchedKeyword: rule.keyword,
+        }
       }
     }
   }
@@ -80,8 +92,8 @@ export function classifyEvent(
     }
   }
 
-  // Step 3: 不相关条目 → 跳过
-  return null
+  // Step 3: 不匹配关键词且不模糊 → 归为「其他」兜底
+  return { subject: '其他', method: 'fallback' }
 }
 
 /** 获取科目色值 */
@@ -90,7 +102,8 @@ export function getSubjectColor(subject: Subject): string {
     '物理': '#f59e0b',
     '数学': '#3b82f6',
     '英语': '#22c55e',
-    '娱乐': '#ef4444',
+    '休闲': '#ec4899',
+    '其他': '#9ca3af',
     '未分类': '#64748b',
   }
   return colors[subject] || '#64748b'
@@ -102,7 +115,8 @@ export function getSubjectIcon(subject: Subject): string {
     '物理': '🔋',
     '数学': '🔢',
     '英语': '🔤',
-    '娱乐': '🎮',
+    '休闲': '🎮',
+    '其他': '📋',
     '未分类': '❓',
   }
   return icons[subject] || '❓'

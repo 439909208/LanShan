@@ -24,14 +24,11 @@ function formatDateCN(iso: string): string {
 
 function calcLevel(bds: Breakdown[] | undefined): number {
   if (!bds || bds.length === 0) return 0
-  const n = bds.filter(b => ['物理','数学','英语'].includes(b.subject) && b.achieved).length
-  if (n === 3) return 2
-  if (n > 0) return 1
-  return 0
+  return bds.filter(b => ['物理','数学','英语'].includes(b.subject) && b.achieved).length
 }
 
 export default function HeatmapGrid(): React.ReactElement {
-  const colors = [0,1,2].map(i => cssVar(`--heatmap-${i}`))
+  const colors = [0,1,2,3].map(i => cssVar(`--heatmap-${i}`))
   const [year, setYear] = useState(new Date().getFullYear())
   const [month, setMonth] = useState(new Date().getMonth() + 1)
   const [cells, setCells] = useState<Map<string, number>>(new Map())
@@ -180,7 +177,7 @@ export default function HeatmapGrid(): React.ReactElement {
       {/* legend */}
       <div className="flex items-center justify-center gap-0.5 mt-1 flex-shrink-0 text-[9px]" style={{color:'var(--text-muted)'}}>
         0科达标
-        {[0,1,2].map(i => <div key={i} className="w-2.5 h-2.5 rounded-sm" style={{background:colors[i]}} />)}
+        {[0,1,2,3].map(i => <div key={i} className="w-2.5 h-2.5 rounded-sm" style={{background:colors[i]}} />)}
         3科全达标
       </div>
 
@@ -197,7 +194,7 @@ export default function HeatmapGrid(): React.ReactElement {
           <p className="text-xs font-medium mb-1">{formatDateCN(tooltip.date)}</p>
           <p className="text-xs tabular-nums" style={{color:'var(--text-secondary)'}}>总时长：{formatShortDuration(tooltipSec)}</p>
           <p className="text-[11px] mt-1" style={{color:'var(--accent)'}}>达标 {tooltipN}/3 科</p>
-          {tooltipBd?.map(b => (
+          {tooltipBd?.filter(b => ['物理','数学','英语'].includes(b.subject)).map(b => (
             <p key={b.subject} className="text-[11px] tabular-nums mt-0.5" style={{color:'var(--text-muted)'}}>
               {getSubjectIcon(b.subject)} {b.subject} {formatShortDuration(b.total_seconds)} {b.achieved ? '✓' : b.total_seconds > 0 ? '✗' : '—'}
             </p>
@@ -211,33 +208,44 @@ export default function HeatmapGrid(): React.ReactElement {
 }
 
 function DayTimelineModal({ date, onClose }: { date: string; onClose: () => void }) {
-  const [segments, setSegments] = useState<any[]>([])
-  useEffect(() => { window.lanshan.getMergedSegments(date).then(setSegments) }, [date])
+  const [groups, setGroups] = useState<{ subject: string; title: string; duration: number }[]>([])
+  useEffect(() => {
+    window.lanshan.getMergedSegments(date).then((segs: any[]) => {
+      const map = new Map<string, { subject: string; title: string; duration: number }>()
+      for (const seg of segs) {
+        if (seg.is_exploded) continue
+        const key = seg.subject + '||' + (seg.title || seg.app)
+        const cur = map.get(key)
+        if (cur) { cur.duration += seg.duration }
+        else { map.set(key, { subject: seg.subject, title: seg.title || seg.app, duration: seg.duration }) }
+      }
+      setGroups(Array.from(map.values()).sort((a, b) => b.duration - a.duration))
+    })
+  }, [date])
+
+  const totalSec = groups.reduce((s, g) => s + g.duration, 0)
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
       <div className="fixed z-50 rounded-xl p-5 shadow-xl"
-        style={{ left:'50%', top:'50%', transform:'translate(-50%,-50%)', background:'var(--bg-card)', border:'1px solid var(--border)', width:600, maxHeight:'80vh', overflow:'auto' }}
+        style={{ left:'50%', top:'50%', transform:'translate(-50%,-50%)', background:'var(--bg-card)', border:'1px solid var(--border)', width:520, maxHeight:'80vh', overflow:'auto' }}
       >
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-medium">🕐 {formatDateCN(date)}</h3>
+          <h3 className="text-sm font-medium">🕐 {formatDateCN(date)} · {formatShortDuration(totalSec)}</h3>
           <button onClick={onClose} className="text-lg leading-none" style={{color:'var(--text-muted)'}}>✕</button>
         </div>
-        {segments.length === 0 ? (
+        {groups.length === 0 ? (
           <p className="text-xs py-8 text-center" style={{color:'var(--text-muted)'}}>该天无学习记录</p>
         ) : (
-          <div className="space-y-2">
-            {segments.map((seg: any) => {
-              const s = new Date(seg.start_time), e = new Date(seg.end_time)
-              const f = (d:Date) => `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
-              return (
-                <div key={seg.id} className="flex items-center gap-3 py-2 px-3 rounded-lg" style={{background:'var(--bg-elevated)'}}>
-                  <span className="text-xs tabular-nums w-24 flex-shrink-0" style={{color:'var(--text-muted)'}}>{f(s)}–{f(e)}</span>
-                  <span className="text-xs font-medium tabular-nums w-14 flex-shrink-0">{formatShortDuration(seg.duration)}</span>
-                  <span className="text-xs truncate" style={{color:'var(--text-secondary)'}}>{getSubjectIcon(seg.subject)} {seg.title || seg.app}</span>
-                </div>
-              )
-            })}
+          <div className="space-y-1.5">
+            {groups.map((g, i) => (
+              <div key={i} className="flex items-center gap-3 py-2 px-3 rounded-lg" style={{background:'var(--bg-elevated)'}}>
+                <span className="text-base flex-shrink-0">{getSubjectIcon(g.subject)}</span>
+                <span className="text-xs font-medium tabular-nums w-14 flex-shrink-0">{formatShortDuration(g.duration)}</span>
+                <span className="text-xs font-medium w-10 flex-shrink-0" style={{color: 'var(--accent)'}}>{g.subject}</span>
+                <span className="text-xs truncate" style={{color:'var(--text-secondary)'}}>{g.title}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>

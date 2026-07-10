@@ -24,6 +24,8 @@ interface LanshanApi {
   getClassificationRules: () => Promise<any[]>
   addClassificationRule: (subject: string, keyword: string, matchField: string, priority: number) => Promise<void>
   deleteClassificationRule: (id: number) => Promise<void>
+  exportRules: () => Promise<string>
+  importRules: () => Promise<number>
   reclassifySegment: (segmentId: number, newSubject: string) => Promise<void>
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
@@ -31,6 +33,8 @@ interface LanshanApi {
   setAutoStart: (enable: boolean) => Promise<void>
   exportData: () => Promise<boolean>
   syncNow: () => Promise<boolean>
+  exportRules: () => Promise<string>
+  importRules: () => Promise<number>
 }
 
 declare global {

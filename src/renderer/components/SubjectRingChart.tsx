@@ -1,5 +1,14 @@
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
-import { getSubjectColor, getSubjectIcon, formatShortDuration } from '../utils'
+import { PieChart, Pie, ResponsiveContainer, Tooltip } from 'recharts'
+import { getSubjectIcon, formatShortDuration } from '../utils'
+
+const COLORS: Record<string, string> = {
+  '物理': '#f59e0b',
+  '数学': '#3b82f6',
+  '英语': '#22c55e',
+  '休闲': '#ec4899',
+  '其他': '#9ca3af',
+  '未分类': '#64748b',
+}
 
 interface RingChartProps {
   data: { subject: string; seconds: number }[]
@@ -14,6 +23,10 @@ function cssVar(name: string): string {
 export default function SubjectRingChart({ data }: RingChartProps): React.ReactElement {
   const total = data.reduce((sum, d) => sum + d.seconds, 0)
   const chartData = data.filter(d => d.seconds > 0)
+  const chartDataWithFill = chartData.map(d => ({
+    ...d,
+    fill: COLORS[d.subject] || '#64748b',
+  }))
 
   if (chartData.length === 0) {
     return (
@@ -37,18 +50,14 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
-              data={chartData}
+              data={chartDataWithFill}
               cx="50%"
               cy="50%"
               innerRadius={48}
               outerRadius={72}
               dataKey="seconds"
               strokeWidth={0}
-            >
-              {chartData.map((entry) => (
-                <Cell key={entry.subject} fill={getSubjectColor(entry.subject)} />
-              ))}
-            </Pie>
+            />
             <Tooltip
               contentStyle={{
                 background: tooltipBg,
@@ -101,7 +110,7 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
                   className="h-full rounded-full"
                   style={{
                     width: `${pct}%`,
-                    backgroundColor: getSubjectColor(entry.subject),
+                    backgroundColor: COLORS[entry.subject] || '#64748b',
                   }}
                 />
               </div>

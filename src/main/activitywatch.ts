@@ -14,6 +14,16 @@ export interface AWEvent {
   }
 }
 
+export interface AWAfkEvent {
+  id: number
+  timestamp: string
+  duration: number
+  data: {
+    status: 'afk' | 'non-afk'
+    [key: string]: unknown
+  }
+}
+
 export interface AWBucket {
   id: string
   type: string
@@ -114,4 +124,54 @@ export async function fetchEventsSince(start: string, end: string): Promise<AWEv
 
   unique.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
   return unique
+}
+
+/**
+ * Check if an AW event overlaps with an AFK (away-from-keyboard) period.
+ * Returns true if the event should be filtered out.
+ */
+export function isOverlappingAfk(
+  eventStart: Date,
+  eventDuration: number,
+  afkPeriods: { start: Date; end: Date }[]
+): boolean {
+  const eventEnd = new Date(eventStart.getTime() + eventDuration * 1000)
+  for (const afk of afkPeriods) {
+    if (eventStart < afk.end && eventEnd > afk.start) {
+      const overlapStart = eventStart > afk.start ? eventStart : afk.start
+      const overlapEnd = eventEnd < afk.end ? eventEnd : afk.end
+      const overlapSec = (overlapEnd.getTime() - overlapStart.getTime()) / 1000
+      if (overlapSec / eventDuration > 0.5) return true
+    }
+  }
+  return false
+}
+
+/**
+ * Fetch AFK (away-from-keyboard) events from AW's afkstatus bucket.
+ * Returns AFK time ranges (start→end).
+ */
+export async function fetchAfkSince(start: string, end: string): Promise<{ start: Date; end: Date }[]> {
+  const buckets = await getBuckets()
+  const afkBuckets = buckets.filter(b => b.type === 'afkstatus')
+  if (afkBuckets.length === 0) return []
+
+  const afkPeriods: { start: Date; end: Date }[] = []
+  for (const bucket of afkBuckets.slice(0, 1)) {
+    try {
+      const params = new URLSearchParams({ start, end, limit: '100000' })
+      const events = await fetchJson(`${AW_BASE}/buckets/${bucket.id}/events?${params}`) as AWAfkEvent[]
+      for (const e of events) {
+        if (e.data?.status === 'afk') {
+          afkPeriods.push({
+            start: new Date(e.timestamp),
+            end: new Date(new Date(e.timestamp).getTime() + e.duration * 1000),
+          })
+        }
+      }
+    } catch (err) {
+      console.error('[afk] Failed to fetch afkstatus bucket:', err)
+    }
+  }
+  return afkPeriods
 }

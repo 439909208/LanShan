@@ -20,8 +20,9 @@
   --scrollbar-thumb-hover: #94a3b8;
   --grid-empty: rgba(0,0,0,0.06);
   --heatmap-0: #e5e7eb;
-  --heatmap-1: #86efac;
-  --heatmap-2: #16a34a;
+  --heatmap-1: #bbf7d0;
+  --heatmap-2: #4ade80;
+  --heatmap-3: #16a34a;
 }
 
 /* ─── Dark theme ─── */
@@ -44,8 +45,9 @@
   --scrollbar-thumb-hover: #2a3d5a;
   --grid-empty: rgba(255,255,255,0.08);
   --heatmap-0: #1e293b;
-  --heatmap-1: #047857;
-  --heatmap-2: #34d399;
+  --heatmap-1: #064e3b;
+  --heatmap-2: #047857;
+  --heatmap-3: #34d399;
 }
 
 html, body, #root {

@@ -130,9 +130,9 @@ export default function Settings(): React.ReactElement {
           style={{ borderBottom: '1px solid var(--border)' }}
         >
           <div className="pr-4">
-            <p className="text-base font-medium">⚠ 娱乐超时提醒</p>
+            <p className="text-base font-medium">⚠ 休闲超时提醒</p>
             <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              连续刷娱乐 {settings.entertainment_threshold ? Math.round(parseInt(settings.entertainment_threshold) / 60) : 30} 分钟后托盘气泡提示
+              连续刷休闲 {settings.entertainment_threshold ? Math.round(parseInt(settings.entertainment_threshold) / 60) : 30} 分钟后托盘气泡提示
             </p>
           </div>
           <div
@@ -212,7 +212,7 @@ function ClassificationRules(): React.ReactElement {
   const [rules, setRules] = useState<any[]>([])
   const [newSubject, setNewSubject] = useState('物理')
   const [newKeyword, setNewKeyword] = useState('')
-  const [newField, setNewField] = useState('title')
+  const [newField, setNewField] = useState('all')
   const [newPri, setNewPri] = useState('5')
 
   useEffect(() => { loadRules() }, [])
@@ -244,15 +244,16 @@ function ClassificationRules(): React.ReactElement {
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <select value={newSubject} onChange={e => setNewSubject(e.target.value)}
           className="rounded-lg px-2 py-1.5 text-xs" style={{ background:'var(--bg-elevated)', color:'var(--text-primary)', border:'1px solid var(--border-light)' }}>
-          {['物理','数学','英语','娱乐'].map(s => <option key={s} value={s}>{s}</option>)}
+          {['物理','数学','英语','休闲'].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <input value={newKeyword} onChange={e => setNewKeyword(e.target.value)} placeholder="关键词"
           className="rounded-lg px-2 py-1.5 text-xs flex-1 min-w-[80px]" style={{ background:'var(--bg-elevated)', color:'var(--text-primary)', border:'1px solid var(--border-light)' }} />
         <select value={newField} onChange={e => setNewField(e.target.value)}
           className="rounded-lg px-2 py-1.5 text-xs" style={{ background:'var(--bg-elevated)', color:'var(--text-primary)', border:'1px solid var(--border-light)' }}>
-          <option value="title">标题</option>
-          <option value="app">进程名</option>
-          <option value="url">URL</option>
+          <option value="all">全部字段</option>
+          <option value="title">仅标题</option>
+          <option value="app">仅进程名</option>
+          <option value="url">仅 URL</option>
         </select>
         <input value={newPri} onChange={e => setNewPri(e.target.value)} placeholder="优先级" type="number" min="1" max="100"
           className="rounded-lg px-2 py-1.5 text-xs w-16 text-center" style={{ background:'var(--bg-elevated)', color:'var(--text-primary)', border:'1px solid var(--border-light)' }} />
@@ -267,12 +268,30 @@ function ClassificationRules(): React.ReactElement {
           <div key={r.id} className="flex items-center gap-2 py-1.5 px-2 rounded-lg text-xs" style={{ background:'var(--bg-elevated)' }}>
             <span className="font-medium w-10">{r.subject}</span>
             <span className="w-20 truncate" style={{ color:'var(--text-secondary)' }}>{r.keyword}</span>
-            <span className="w-10" style={{ color:'var(--text-muted)' }}>{r.match_field === 'title' ? '标题' : r.match_field === 'app' ? '进程' : 'URL'}</span>
+            <span className="w-14" style={{ color:'var(--text-muted)' }}>{r.match_field === 'title' ? '标题' : r.match_field === 'app' ? '进程' : r.match_field === 'all' ? '全部' : 'URL'}</span>
             <span className="w-6 text-center" style={{ color:'var(--text-muted)' }}>{r.priority}</span>
             <button onClick={() => remove(r.id)} className="ml-auto text-xs" style={{ color:'#ef4444' }}>✕</button>
           </div>
         ))}
         {rules.length === 0 && <p className="text-xs py-4 text-center" style={{ color:'var(--text-muted)' }}>暂无自定义规则</p>}
+      </div>
+      {/* Export / Import rules */}
+      <div className="flex gap-2 mt-3">
+        <button onClick={async () => {
+          const path = await window.lanshan.exportRules()
+          alert('分类规则已导出到：' + path)
+        }} className="flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+          style={{ background:'var(--accent-bg)', color:'var(--accent)' }}>
+          📤 导出规则
+        </button>
+        <button onClick={async () => {
+          const n = await window.lanshan.importRules()
+          await loadRules()
+          alert('已导入 ' + n + ' 条规则')
+        }} className="flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+          style={{ background:'var(--accent-bg)', color:'var(--accent)' }}>
+          📥 导入规则
+        </button>
       </div>
     </div>
   )

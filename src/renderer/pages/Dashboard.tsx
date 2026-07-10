@@ -1,6 +1,15 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getSubjectColor, getSubjectIcon, getSubjectTierIcon, formatDuration, formatShortDuration } from '../utils'
+import { getSubjectIcon, getSubjectTierIcon, formatDuration, formatShortDuration } from '../utils'
+
+const C_COLORS: Record<string, string> = {
+  '物理': '#f59e0b',
+  '数学': '#3b82f6',
+  '英语': '#22c55e',
+  '休闲': '#ec4899',
+  '其他': '#9ca3af',
+  '未分类': '#64748b',
+}
 import SubjectRingChart from '../components/SubjectRingChart'
 import WeekTrendChart from '../components/WeekTrendChart'
 import HeatmapGrid from '../components/HeatmapGrid'
@@ -80,7 +89,7 @@ export default function Dashboard(): React.ReactElement {
           targetSeconds: targetSec,
           achieved: totalSec >= targetSec,
           exceeded: totalSec >= targetSec * 1.5,
-          color: getSubjectColor(subject),
+          color: C_COLORS[subject] || '#64748b',
           icon: getSubjectTierIcon(subject, achievements),
         }
       })
@@ -138,19 +147,19 @@ export default function Dashboard(): React.ReactElement {
 
         {/* 右侧：数据卡片 + 进度卡片 + 趋势图 — 占 2 列 */}
         <div className="col-span-2 flex flex-col gap-5">
-          <div className="flex-[2] flex flex-col gap-5 min-h-0">
-            <div className="grid grid-cols-3 gap-5 flex-1">
+          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.5' }}>
+            <div className="grid grid-cols-3 gap-5 flex-1 pt-3">
               <MiniCard icon="📊" value={formatDuration(totalToday)} label="今日学习" />
               <MiniCard icon="🔥" value={`${consecutiveDays} 天`} label="连续打卡" sub={`最长 ${maxConsecutive} 天`} />
               <MiniCard icon="🏆" value={formatShortDuration(totalAllTime)} label="累计总时长" />
             </div>
-            <div className="grid grid-cols-3 gap-5 flex-1">
+            <div className="grid grid-cols-3 gap-5 flex-1 pb-3">
               {progress.map((p) => (
                 <SubjectCard key={p.subject} progress={p} />
               ))}
             </div>
           </div>
-          <div className="card flex-[3] flex flex-col min-h-0">
+          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '2.3' }}>
             <h3 className="text-sm font-medium mb-3 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
               近 7 天趋势
             </h3>
@@ -162,7 +171,7 @@ export default function Dashboard(): React.ReactElement {
               />
             </div>
           </div>
-          <div className="card flex-shrink-0">
+          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.2' }}>
             <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
               🕐 今日时间轴
             </h3>
