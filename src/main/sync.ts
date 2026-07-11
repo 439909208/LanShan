@@ -315,19 +315,19 @@ export function rebuildMergedSegments(date: string): void {
   }))
 
   // Save manual subject overrides before clearing (user_subject IS NOT NULL)
-  const overrides = new Map<string, Subject>()
+  type Override = { start: string; end: string; subj: Subject }
+  const overrides: Override[] = []
   const oldOverrides = db?.exec(
-    "SELECT start_time, end_time, title, user_subject FROM merged_segments WHERE date = ? AND is_exploded = 0 AND user_subject IS NOT NULL",
+    "SELECT start_time, end_time, user_subject FROM merged_segments WHERE date = ? AND is_exploded = 0 AND user_subject IS NOT NULL",
     [date]
   )
   if (oldOverrides && oldOverrides[0]) {
     for (const row of oldOverrides[0].values) {
-      const st = row[0] as string
-      const et = row[1] as string
-      const title = row[2] as string
-      const us = row[3] as Subject
-      // Store keyed by "start_time|end_time|title" for matching after rebuild
-      overrides.set(st + '|' + et + '|' + title, us)
+      overrides.push({
+        start: row[0] as string,
+        end: row[1] as string,
+        subj: row[2] as Subject,
+      })
     }
   }
 
@@ -362,14 +362,23 @@ export function rebuildMergedSegments(date: string): void {
       }
     }
 
-    // Restore manual subject override if this segment matches a saved one
-    const key = segment.start_time + '|' + segment.end_time + '|' + safeTitle
-    const userSubj = overrides.get(key)
-    if (userSubj) {
-      db?.run(
-        'UPDATE merged_segments SET subject = ?, user_subject = ? WHERE start_time = ? AND end_time = ? AND title = ? AND date = ? AND is_exploded = 0',
-        [userSubj, userSubj, segment.start_time, segment.end_time, safeTitle, date]
-      )
+    // Restore manual subject override if this segment overlaps with a saved one
+    const newId = db?.exec('SELECT last_insert_rowid()')?.[0]?.values?.[0]?.[0] as number | undefined
+    if (newId != null) {
+      for (const ov of overrides) {
+        if (segment.start_time < ov.end && segment.end_time > ov.start) {
+          const durRow = db?.exec(
+            'SELECT COALESCE(SUM(duration), 0) FROM merged_segments WHERE parent_id = ? AND subject = ?',
+            [newId, ov.subj]
+          )
+          const userDur = durRow?.[0]?.values?.[0]?.[0] as number ?? 0
+          db?.run(
+            'UPDATE merged_segments SET subject = ?, user_subject = ?, duration = ? WHERE id = ?',
+            [ov.subj, ov.subj, userDur, newId]
+          )
+          break
+        }
+      }
     }
   }
 
