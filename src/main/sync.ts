@@ -156,6 +156,22 @@ export async function syncFullToday(): Promise<void> {
   const events = await fetchEventsSince(start, end)
   console.log('[sync-full] AW returned', events.length, 'events')
 
+  // DIAG: sum AW raw events by title BEFORE any processing
+  const awTitleMap = new Map<string, number>()
+  for (const e of events) {
+    const t = e.data?.title || ''
+    awTitleMap.set(t, (awTitleMap.get(t) || 0) + e.duration)
+  }
+  const awSorted = Array.from(awTitleMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+  console.log('[sync-full] DIAG ====== AW raw per-title (top 20) ======')
+  for (const [t, sec] of awSorted) {
+    console.log(`  "${t.substring(0, 80)}": ${Math.round(sec)}s = ${Math.round(sec/60)}min`)
+  }
+  const awGrand = Array.from(awTitleMap.values()).reduce((s, v) => s + v, 0)
+  console.log(`[sync-full] DIAG AW raw grand total: ${Math.round(awGrand)}s = ${Math.round(awGrand/60)}min`)
+
   let noiseDropped = 0
   let classifiedDropped = 0
   let stored = 0
