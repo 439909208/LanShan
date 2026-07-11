@@ -158,7 +158,6 @@ export async function syncFullToday(): Promise<void> {
 
   // Clear merged segments and daily_stats — full rebuild from raw_events
   const db = getDb()
-  clearMergedSegments(today)
   db?.run("DELETE FROM daily_stats WHERE date = ?", [today])
   // 清除今天 daily_stats 中的非核心科目脏数据
   db?.run("DELETE FROM daily_stats WHERE date = ? AND subject NOT IN ('物理','数学','英语')", [today])
@@ -337,9 +336,6 @@ export function rebuildMergedSegments(date: string): void {
   // Merge algorithm
   const merged = mergeSegments(rows)
 
-  // Clear old merged segments for this date
-  clearMergedSegments(date)
-  
   // Insert parent segments + exploded children
   for (const segment of merged) {
     const safeTitle = String(segment.title ?? '')
