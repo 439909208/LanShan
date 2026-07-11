@@ -333,16 +333,16 @@ export function rebuildMergedSegments(date: string): void {
   // Clear old merged segments for this date
   clearMergedSegments(date)
 
-  // Merge algorithm
-  const merged = mergeSegments(rows)
+  // Merge algorithm — passes user overrides so Phase 4 can respect them
+  const merged = mergeSegments(rows, overrides.length > 0 ? overrides : undefined)
 
   // Insert parent segments + exploded children
   for (const segment of merged) {
     const safeTitle = String(segment.title ?? '')
     const safeApp = String(segment.app ?? '')
     db?.run(
-      'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)',
-      [date, segment.start_time, segment.end_time, segment.duration, segment.subject, safeTitle, safeApp]
+      'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id, user_subject) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)',
+      [date, segment.start_time, segment.end_time, segment.duration, segment.subject, safeTitle, safeApp, segment.user_subject ?? null]
     )
     // Save parent ID immediately (before children insertions that would change last_insert_rowid)
     const parentId = db?.exec('SELECT last_insert_rowid()')?.[0]?.values?.[0]?.[0] as number | undefined
@@ -354,24 +354,6 @@ export function rebuildMergedSegments(date: string): void {
         stmt.run([date, segment.start_time, segment.end_time, c.duration, c.subject, String(c.title ?? ''), String(c.app ?? ''), parentId])
       }
       stmt.free()
-    }
-
-    // Restore manual subject override if this segment overlaps with a saved one
-    if (parentId != null) {
-      for (const ov of overrides) {
-        if (segment.start_time < ov.end && segment.end_time > ov.start) {
-          const durRow = db?.exec(
-            'SELECT COALESCE(SUM(duration), 0) FROM merged_segments WHERE parent_id = ? AND subject = ?',
-            [parentId, ov.subj]
-          )
-          const userDur = durRow?.[0]?.values?.[0]?.[0] as number ?? 0
-          db?.run(
-            'UPDATE merged_segments SET subject = ?, user_subject = ?, duration = ? WHERE id = ?',
-            [ov.subj, ov.subj, userDur, newId]
-          )
-          break
-        }
-      }
     }
   }
 
@@ -465,9 +447,12 @@ interface MergedEntry {
   title: string
   app: string
   constituents: { subject: Subject; title: string; app: string; duration: number }[]
+  user_subject?: Subject  // set by Phase 4 when a manual override is applied
 }
 
-function mergeSegments(entries: RawEntry[]): MergedEntry[] {
+type UserOverride = { start: string; end: string; subj: Subject }
+
+function mergeSegments(entries: RawEntry[], userOverrides?: UserOverride[]): MergedEntry[] {
   if (entries.length === 0) return []
 
   const merged: MergedEntry[] = []
@@ -631,24 +616,42 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
     }
   }
 
-  // Recalculate segment subject and duration based on the dominant subject
+  // Recalculate segment subject and duration.
+  // For segments without manual override, pick the dominant subject
   // (the one with the highest total duration across all its constituents).
-  // This prevents the first event's subject from incorrectly labelling the segment
-  // when a different subject actually dominates (e.g. 休闲 23m + 英语 68m → 英语).
+  // If a manual override exists (user_subject), use that subject instead.
   for (const seg of merged) {
-    // Group same-subject constituents and sum their durations
+    // Check if a manual override overlaps with this segment
+    let overrideSubj: Subject | null = null
+    if (userOverrides) {
+      for (const ov of userOverrides) {
+        if (seg.start_time < ov.end && seg.end_time > ov.start) {
+          overrideSubj = ov.subj
+          break
+        }
+      }
+    }
+
     const bySubject = new Map<string, number>()
     for (const c of seg.constituents) {
       bySubject.set(c.subject, (bySubject.get(c.subject) || 0) + c.duration)
     }
-    // Pick the subject with the highest total
-    let bestSubject = seg.subject
-    let bestDur = 0
-    for (const [subj, dur] of bySubject) {
-      if (dur > bestDur) { bestDur = dur; bestSubject = subj }
+
+    if (overrideSubj) {
+      // Use manual override — duration = total for that subject only
+      seg.subject = overrideSubj
+      seg.duration = bySubject.get(overrideSubj) ?? 0
+      seg.user_subject = overrideSubj  // persist for DB insert
+    } else {
+      // Pick the subject with the highest total
+      let bestSubject = seg.subject
+      let bestDur = 0
+      for (const [subj, dur] of bySubject) {
+        if (dur > bestDur) { bestDur = dur; bestSubject = subj }
+      }
+      seg.duration = bestDur
+      seg.subject = bestSubject as Subject
     }
-    seg.duration = bestDur
-    seg.subject = bestSubject as Subject
   }
 
   // Final gap-fill: stretch any adjacent segments with < 10 min gap to touch visually
