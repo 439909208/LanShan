@@ -578,23 +578,24 @@ export function getRawTitleStats(date: string): { title: string; duration: numbe
 }
 
 export function reclassifySegment(segmentId: number, newSubject: Subject): void {
-  const result = db?.exec('SELECT date, title, app, start_time, end_time, subject FROM merged_segments WHERE id = ?', [segmentId])
-  if (!result || result.length === 0 || result[0].values.length === 0) return
+  // Only change the outer display label — keep inner titles unchanged.
+  const result = db?.exec(
+    'SELECT id FROM merged_segments WHERE id = ? AND is_exploded = 0',
+    [segmentId]
+  )
+  if (!result || !result[0]?.values?.length) return
 
-  const row = result[0].values[0]
-  const date = row[0] as string
-  const title = row[1] as string
-  const app = row[2] as string
-  const startTime = row[3] as string
-  const endTime = row[4] as string
-  const oldSubject = row[5] as string
+  // Calculate the duration for the chosen subject from children
+  const durRow = db?.exec(
+    'SELECT COALESCE(SUM(duration), 0) FROM merged_segments WHERE parent_id = ? AND subject = ?',
+    [segmentId, newSubject]
+  )
+  const newDuration = durRow?.[0]?.values?.[0]?.[0] as number ?? 0
 
-  db?.run('UPDATE merged_segments SET subject = ?, user_subject = ? WHERE id = ?', [newSubject, newSubject, segmentId])
-
-  // Also update exploded children
+  // Only update the parent segment — nothing else
   db?.run(
-    'UPDATE merged_segments SET subject = ?, user_subject = ? WHERE parent_id = ?',
-    [newSubject, newSubject, segmentId]
+    'UPDATE merged_segments SET subject = ?, user_subject = ?, duration = ? WHERE id = ?',
+    [newSubject, newSubject, newDuration, segmentId]
   )
 
   save()
