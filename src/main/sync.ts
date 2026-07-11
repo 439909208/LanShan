@@ -80,16 +80,8 @@ export async function syncActivityWatch(): Promise<void> {
       '(', Math.round((last.getTime() - first.getTime()) / 60000), 'min )')
   }
 
-  // Process and store raw events
-  // Build set of existing AW event IDs to avoid re-classifying old events
+  // Process and store raw events — always UPSERT so AW's updated duration is saved
   const db = getDb()
-  const existingRows = db?.exec('SELECT aw_id FROM raw_events')
-  const existingIds = new Set<string>()
-  if (existingRows && existingRows[0]) {
-    for (const row of existingRows[0].values) {
-      existingIds.add(row[0] as string)
-    }
-  }
 
   let minNewTime: string | null = null
   let maxNewTime: string | null = null
@@ -97,9 +89,6 @@ export async function syncActivityWatch(): Promise<void> {
   for (const awEvent of events) {
     const duration = awEvent.duration
     if (duration < NOISE_THRESHOLD_SECONDS) continue
-
-    // Skip if already in DB — preserve original classification
-    if (existingIds.has(String(awEvent.id))) continue
 
     const title = awEvent.data?.title || ''
     const app = awEvent.data?.app || ''
@@ -170,28 +159,12 @@ export async function syncFullToday(): Promise<void> {
   let noiseDropped = 0
   let classifiedDropped = 0
   let stored = 0
-  let skippedExisting = 0
   const droppedSamples: string[] = []
-
-  // Build set of existing IDs to preserve manual reclassifications
-  const existingRows = db?.exec('SELECT aw_id FROM raw_events')
-  const existingIds = new Set<string>()
-  if (existingRows && existingRows[0]) {
-    for (const row of existingRows[0].values) {
-      existingIds.add(row[0] as string)
-    }
-  }
 
   for (const awEvent of events) {
     const duration = awEvent.duration
     if (duration < NOISE_THRESHOLD_SECONDS) {
       noiseDropped++
-      continue
-    }
-
-    // Skip already-stored events — preserve manual reclassification
-    if (existingIds.has(String(awEvent.id))) {
-      skippedExisting++
       continue
     }
 
@@ -219,7 +192,7 @@ export async function syncFullToday(): Promise<void> {
     }
   }
 
-  console.log('[sync-full] noise:', noiseDropped, 'classified-dropped:', classifiedDropped, 'skipped-existing:', skippedExisting, 'stored:', stored)
+  console.log('[sync-full] noise:', noiseDropped, 'classified-dropped:', classifiedDropped, 'stored:', stored)
   if (droppedSamples.length > 0) {
     console.log('[sync-full] Dropped samples:', droppedSamples)
   }
@@ -300,6 +273,47 @@ export async function syncFullToday(): Promise<void> {
   if (dsPerSubject.length > 0) {
     const parts = dsPerSubject.map(d => d.subject + ':' + Math.round(d.total_seconds / 60) + 'min')
     console.log('[sync-full] DIAG daily_stats:', parts.join(', '))
+  }
+
+  // DIAG: per-title totals from raw_events (find where time is lost vs AW)
+  const titleTotals = db.exec(
+    "SELECT COALESCE(title, '(NULL)') as t, COUNT(*) as cnt, COALESCE(SUM(duration), 0) as sec FROM raw_events WHERE timestamp >= ? AND timestamp < ? GROUP BY title ORDER BY sec DESC",
+    getUTCRange(today)
+  )
+  if (titleTotals && titleTotals[0]) {
+    console.log('[sync-full] DIAG ====== per-title raw_events totals ======')
+    let grandTotal = 0
+    for (const row of titleTotals[0].values) {
+      const t = (row[0] as string).substring(0, 80)
+      const cnt = row[1] as number
+      const sec = row[2] as number
+      grandTotal += sec
+      console.log(`  [${cnt}ev, ${sec}s = ${Math.round(sec/60)}min] "${t}"`)
+    }
+    console.log(`[sync-full] DIAG grand total from raw_events: ${grandTotal}s = ${Math.round(grandTotal/60)}min`)
+  }
+
+  // DIAG: count NULL/empty title events
+  const nullTitle = db.exec(
+    "SELECT COUNT(*) as cnt, COALESCE(SUM(duration), 0) as sec FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND (title IS NULL OR title = '')",
+    getUTCRange(today)
+  )
+  if (nullTitle && nullTitle[0] && nullTitle[0].values[0]) {
+    const cnt = nullTitle[0].values[0][0] as number
+    const sec = nullTitle[0].values[0][1] as number
+    console.log(`[sync-full] DIAG NULL/empty title: ${cnt} events, ${sec}s = ${Math.round(sec/60)}min`)
+  }
+
+  // DIAG: totals for ambiguous-titled apps (视频播放 etc)
+  const amb = db.exec(
+    "SELECT app, COALESCE(SUM(duration),0) as sec FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND (LOWER(title) LIKE '%视频播放%' OR LOWER(title) LIKE '%video%' OR LOWER(title) LIKE '%reasonix%' OR LOWER(app) LIKE '%video%' OR LOWER(app) LIKE '%reasonix%') GROUP BY app ORDER BY sec DESC",
+    getUTCRange(today)
+  )
+  if (amb && amb[0]) {
+    console.log('[sync-full] DIAG ambiguous apps:')
+    for (const row of amb[0].values) {
+      console.log(`  ${row[0]}: ${Math.round((row[1] as number)/60)}min`)
+    }
   }
 
   save()

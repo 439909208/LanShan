@@ -472,8 +472,7 @@ export function insertRawEvent(event: Omit<RawEvent, 'id'>): void {
        duration = excluded.duration,
        app = excluded.app,
        title = excluded.title,
-       url = excluded.url,
-       subject = excluded.subject`,
+       url = excluded.url`,
     [event.aw_id, event.timestamp.toISOString(), event.duration, event.app, event.title, event.url, event.subject]
   )
 }

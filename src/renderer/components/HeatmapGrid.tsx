@@ -228,6 +228,7 @@ function DayTimelineModal({ date, onClose }: { date: string; onClose: () => void
     }
     setGroups(Array.from(map.values())
       .map(g => ({ ...g, subjects: Array.from(g.subjects) }))
+      .filter(g => g.duration >= 120)  // 隐藏 ≤ 2 分钟的零星活动
       .sort((a, b) => b.duration - a.duration))
   }
 

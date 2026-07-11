@@ -80,17 +80,23 @@ export async function getWindowEvents(bucketId: string, start: string, end: stri
 export async function findWindowBuckets(): Promise<AWBucket[]> {
   const buckets = await getBuckets()
   
-  // Prefer 'window' type buckets, fallback to 'afkstatus' or anything with window data
+  // Use only 'window' type buckets (finalized durations) — never mix with
+  // 'currentwindow' which reports the same events under different IDs,
+  // causing double-counting.
   const windowBuckets = buckets.filter(b => b.type === 'window')
-  const afkBuckets = buckets.filter(b => b.type === 'afkstatus')
   const currentBuckets = buckets.filter(b => b.type === 'currentwindow')
+  const afkBuckets = buckets.filter(b => b.type === 'afkstatus')
 
-  // Return window buckets sorted by most recently created
-  const sorted = [...windowBuckets, ...currentBuckets].sort(
-    (a, b) => new Date(b.created).getTime() - new Date(a.created).getTime()
-  )
-
-  if (sorted.length > 0) return sorted
+  if (windowBuckets.length > 0) {
+    return windowBuckets.sort(
+      (a, b) => new Date(b.created).getTime() - new Date(a.created).getTime()
+    )
+  }
+  if (currentBuckets.length > 0) {
+    return currentBuckets.sort(
+      (a, b) => new Date(b.created).getTime() - new Date(a.created).getTime()
+    )
+  }
   return afkBuckets
 }
 
