@@ -227,9 +227,11 @@ ActivityWatch (localhost:5600)
 ### 6.3 syncFullToday（全量同步）
 
 ```
-1. 清除今天 merged_segments 和 daily_stats
+1. 清除今天 daily_stats
 2. fetchEventsSince(今天00:00, now)
-3. 遍历所有事件 → classifyEvent → insertRawEvent (UPSERT)
+3. 遍历所有事件 → classifyEvent → insertRawEvent (UPSERT by aw_id)
+   → 不跳过已存事件：duration/timestamp 始终与 AW 保持同步
+   → subject 由 ON CONFLICT 保留（不覆盖手动分类）
 4. 兜底重分类：raw_events 中 subject∈('其他','未分类') 的事件，
    用最新规则重新判定，如果匹配到具体科目则 UPDATE
 5. rebuildMergedSegments(today)
@@ -248,7 +250,15 @@ ActivityWatch (localhost:5600)
 | `MERGE_GAP_SECONDS` | 300 | 同科目事件间隔 ≤5min 合并为一段 |
 | `NOISE_THRESHOLD_SECONDS` | 0 | 不过滤任何时长的 AW 事件 |
 | `MIN_SEGMENT_SEC` | 300 | 短于 5min 的段可能被相邻段吸收 |
+| `HEATMAP_MIN_TITLE_SEC` | 120 | 热力图详情页隐藏 ≤2min 的标题组 |
 | `GAP_FILL_SEC` | 600 | 同科目段 ≤10min 空白自动补全合并 |
+
+### 6.5 数据一致性规则
+
+- **duration 不冻结**：同步不跳过已存事件，每次 UPSERT 都会刷新 duration/timestamp，确保长时间运行的窗口（如视频播放）的最终时长与 AW 一致。
+- **手动分类不被覆盖**：`insertRawEvent` 的 `ON CONFLICT DO UPDATE` 不包含 `subject` 列，UPSERT 只更新元数据，保留用户手动设置的科目。
+- **桶类型隔离**：`findWindowBuckets` 只使用 `window` 类型桶（finalized 时长），不与 `currentwindow` 混合，防止同窗口在不同桶中重复计数。
+- **diag 日志**：`syncFullToday` 输出 AW 原始 per-title 汇总和 raw_events per-title 汇总，便于排查数据差异。
 
 ---
 
@@ -424,8 +434,9 @@ Dashboard
 
 | 操作 | IPC 调用 | 说明 |
 |---|---|---|
-| 重分类段 | `reclassifySegment` | 弹出科目选择器 |
+| 重分类段 | `reclassifySegment` | 弹出科目选择器，只改父段标签不动子段 |
 | 按标题重分类 | `reclassifyByTitle` | 段详情中按标题重分类所有同类事件 |
+| 按时段内标题重分类 | `reclassifyByTitleInRange` | 详情弹窗子标题重分类，自动重建 merged_segments 和 daily_stats |
 | 拆分 | `splitSegment` | 剪刀模式，在指定时间点拆分 |
 | 合并 | `mergeAdjacentSegments` | 选中两个相邻段合并 |
 
@@ -488,6 +499,14 @@ Dashboard
 3. 添加规则后会自动调用 `reclassifyRawEventsByKeyword` 重分类现有数据
 4. 如果规则匹配两种不同科目 → 优先级高的生效
 
+### 12.5 "热力图详情页时长与 AW 不一致"
+
+1. 终端日志对比 `DIAG AW raw per-title` 和 `DIAG per-title raw_events totals`
+   - 两者一致 → raw_events 数据正确，差异来自 AW 自身 UI 的 AFK 过滤或聚合方式不同
+   - raw_events 偏小 → 检查是否有事件因空标题被 `loadGroups` 丢弃
+   - raw_events 偏大 → 检查 `findWindowBuckets` 是否误用了多种桶类型
+2. AW 的 Top Window Titles 可能将同一 app 的多个实例拆分显示，注意向下滚动查看完整列表
+
 ---
 
 ## 13. 关键设计决策
@@ -501,6 +520,14 @@ Dashboard
 4. **历史日期现场重建 daily_stats**：`daily_stats` 可能因为旧 bug 而不完整，切到历史日期时自动从 raw_events 重建。
 
 5. **窗口关闭 = 隐藏到托盘**：不会真正退出，用户通过托盘菜单退出。
+
+6. **duration 不冻结**：同步不跳过已存事件，确保长时间运行的窗口时长与 AW 一致。
+
+7. **桶类型隔离**：`findWindowBuckets` 只使用 `window` 桶，不与 `currentwindow` 混合防重复。
+
+8. **手动分类保护**：`insertRawEvent` 的 UPSERT 不更新 `subject` 列。
+
+9. **主导科目重算尊重手动覆盖**：`user_subject` 列 + Phase 4 优先使用手动设置。
 
 ---
 
@@ -579,3 +606,12 @@ Dashboard
 1. 与旧代码的 `reclassifySegment` 全量 UPDATE raw_events 兼容性差
 2. 链式吸收的时间边界条件有坑（gap 为负值时误判）
 3. 与现有的手动重分类逻辑互相干扰
+
+---
+
+## 14. 版本历史
+
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| 0.2.0 | 2026-07-11 | duration 不冻结、桶类型隔离、手动分类保护、2min 标题过滤、per-title 诊断日志 |
+| 0.1.0 | 2026-07-11 | 初始版本 |
