@@ -168,6 +168,13 @@ export async function initDatabase(): Promise<void> {
   db?.run("UPDATE daily_stats SET subject = '休闲' WHERE subject = '娱乐'")
   db?.run("UPDATE classification_rules SET subject = '休闲' WHERE subject = '娱乐'")
 
+  // Add user_subject column if missing (v4)
+  try {
+    db?.run("ALTER TABLE merged_segments ADD COLUMN user_subject TEXT")
+  } catch {
+    // Column already exists — ignore
+  }
+
   save()
 }
 
@@ -208,7 +215,8 @@ function createTables(): void {
       title TEXT NOT NULL,
       app TEXT NOT NULL,
       is_exploded INTEGER DEFAULT 0,
-      parent_id INTEGER
+      parent_id INTEGER,
+      user_subject TEXT
     )
   `)
 
@@ -581,12 +589,12 @@ export function reclassifySegment(segmentId: number, newSubject: Subject): void 
   const endTime = row[4] as string
   const oldSubject = row[5] as string
 
-  db?.run('UPDATE merged_segments SET subject = ? WHERE id = ?', [newSubject, segmentId])
-  // Update ALL raw_events within the segment's time range (absorbed fragments may have different subjects)
+  db?.run('UPDATE merged_segments SET subject = ?, user_subject = ? WHERE id = ?', [newSubject, newSubject, segmentId])
+
+  // Also update exploded children
   db?.run(
-    `UPDATE raw_events SET subject = ?
-     WHERE timestamp >= ? AND timestamp <= ?`,
-    [newSubject, startTime, endTime]
+    'UPDATE merged_segments SET subject = ?, user_subject = ? WHERE parent_id = ?',
+    [newSubject, newSubject, segmentId]
   )
 
   save()

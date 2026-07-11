@@ -314,6 +314,23 @@ export function rebuildMergedSegments(date: string): void {
     subject: row[4] as Subject,
   }))
 
+  // Save manual subject overrides before clearing (user_subject IS NOT NULL)
+  const overrides = new Map<string, Subject>()
+  const oldOverrides = db?.exec(
+    "SELECT start_time, end_time, title, user_subject FROM merged_segments WHERE date = ? AND is_exploded = 0 AND user_subject IS NOT NULL",
+    [date]
+  )
+  if (oldOverrides && oldOverrides[0]) {
+    for (const row of oldOverrides[0].values) {
+      const st = row[0] as string
+      const et = row[1] as string
+      const title = row[2] as string
+      const us = row[3] as Subject
+      // Store keyed by "start_time|end_time|title" for matching after rebuild
+      overrides.set(st + '|' + et + '|' + title, us)
+    }
+  }
+
   // Clear old merged segments for this date
   clearMergedSegments(date)
 
@@ -343,6 +360,16 @@ export function rebuildMergedSegments(date: string): void {
         }
         stmt.free()
       }
+    }
+
+    // Restore manual subject override if this segment matches a saved one
+    const key = segment.start_time + '|' + segment.end_time + '|' + safeTitle
+    const userSubj = overrides.get(key)
+    if (userSubj) {
+      db?.run(
+        'UPDATE merged_segments SET subject = ?, user_subject = ? WHERE start_time = ? AND end_time = ? AND title = ? AND date = ? AND is_exploded = 0',
+        [userSubj, userSubj, segment.start_time, segment.end_time, safeTitle, date]
+      )
     }
   }
 
