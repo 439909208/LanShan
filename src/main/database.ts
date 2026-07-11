@@ -625,10 +625,10 @@ export function reclassifyByTitle(date: string, title: string, newSubject: Subje
     // Also update its exploded children if any
     db?.run('UPDATE merged_segments SET subject = ? WHERE parent_id = ?', [newSubject, segId])
 
-    // Update raw_events within this segment's time range (all, regardless of current subject)
+    // Update raw_events with matching title within this segment's time range
     db?.run(
-      'UPDATE raw_events SET subject = ? WHERE timestamp >= ? AND timestamp <= ?',
-      [newSubject, startTime, endTime]
+      'UPDATE raw_events SET subject = ? WHERE timestamp >= ? AND timestamp <= ? AND title = ?',
+      [newSubject, startTime, endTime, title]
     )
     count++
   }
