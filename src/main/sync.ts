@@ -344,28 +344,25 @@ export function rebuildMergedSegments(date: string): void {
       'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)',
       [date, segment.start_time, segment.end_time, segment.duration, segment.subject, safeTitle, safeApp]
     )
-    if (segment.constituents.length > 1) {
-      const idRow = db?.exec('SELECT last_insert_rowid()')
-      const parentId = idRow?.[0]?.values?.[0]?.[0] as number
-      if (parentId != null) {
-        const stmt = db.prepare(
-          'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)'
-        )
-        for (const c of segment.constituents) {
-          stmt.run([date, segment.start_time, segment.end_time, c.duration, c.subject, String(c.title ?? ''), String(c.app ?? ''), parentId])
-        }
-        stmt.free()
+    // Save parent ID immediately (before children insertions that would change last_insert_rowid)
+    const parentId = db?.exec('SELECT last_insert_rowid()')?.[0]?.values?.[0]?.[0] as number | undefined
+    if (segment.constituents.length > 1 && parentId != null) {
+      const stmt = db.prepare(
+        'INSERT INTO merged_segments (date, start_time, end_time, duration, subject, title, app, is_exploded, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)'
+      )
+      for (const c of segment.constituents) {
+        stmt.run([date, segment.start_time, segment.end_time, c.duration, c.subject, String(c.title ?? ''), String(c.app ?? ''), parentId])
       }
+      stmt.free()
     }
 
     // Restore manual subject override if this segment overlaps with a saved one
-    const newId = db?.exec('SELECT last_insert_rowid()')?.[0]?.values?.[0]?.[0] as number | undefined
-    if (newId != null) {
+    if (parentId != null) {
       for (const ov of overrides) {
         if (segment.start_time < ov.end && segment.end_time > ov.start) {
           const durRow = db?.exec(
             'SELECT COALESCE(SUM(duration), 0) FROM merged_segments WHERE parent_id = ? AND subject = ?',
-            [newId, ov.subj]
+            [parentId, ov.subj]
           )
           const userDur = durRow?.[0]?.values?.[0]?.[0] as number ?? 0
           db?.run(
