@@ -3,7 +3,7 @@ import { join } from 'path'
 import { writeFileSync } from 'fs'
 import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, getRawTitleStats, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange } from './database'
 import { createTray, refreshTray } from './tray'
-import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments } from './sync'
+import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments, rebuildMergedSegmentsInRange } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
 const isDev = !app.isPackaged
 
@@ -131,7 +131,9 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('reclassify-by-title-in-range', (_event, date: string, startTime: string, endTime: string, title: string, newSubject: Subject) => {
     reclassifyByTitleInRange(date, startTime, endTime, title, newSubject)
-    // Don't call rebuildMergedSegments. Just recalculate daily_stats.
+    // Rebuild merged segments in this range to reflect updated raw_events
+    rebuildMergedSegmentsInRange(date, startTime, endTime)
+    // Recalculate daily_stats from raw_events for accurate SubjectCard
     const db = getDb()
     db?.run('DELETE FROM daily_stats WHERE date = ?', [date])
     const [utcStart, utcEnd] = getUTCRange(date)

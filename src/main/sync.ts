@@ -170,12 +170,28 @@ export async function syncFullToday(): Promise<void> {
   let noiseDropped = 0
   let classifiedDropped = 0
   let stored = 0
+  let skippedExisting = 0
   const droppedSamples: string[] = []
+
+  // Build set of existing IDs to preserve manual reclassifications
+  const existingRows = db?.exec('SELECT aw_id FROM raw_events')
+  const existingIds = new Set<string>()
+  if (existingRows && existingRows[0]) {
+    for (const row of existingRows[0].values) {
+      existingIds.add(row[0] as string)
+    }
+  }
 
   for (const awEvent of events) {
     const duration = awEvent.duration
     if (duration < NOISE_THRESHOLD_SECONDS) {
       noiseDropped++
+      continue
+    }
+
+    // Skip already-stored events — preserve manual reclassification
+    if (existingIds.has(String(awEvent.id))) {
+      skippedExisting++
       continue
     }
 
@@ -203,7 +219,7 @@ export async function syncFullToday(): Promise<void> {
     }
   }
 
-  console.log('[sync-full] noise:', noiseDropped, 'classified-dropped:', classifiedDropped, 'stored:', stored)
+  console.log('[sync-full] noise:', noiseDropped, 'classified-dropped:', classifiedDropped, 'skipped-existing:', skippedExisting, 'stored:', stored)
   if (droppedSamples.length > 0) {
     console.log('[sync-full] Dropped samples:', droppedSamples)
   }
