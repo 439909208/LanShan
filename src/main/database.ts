@@ -638,14 +638,43 @@ export function reclassifyByTitle(date: string, title: string, newSubject: Subje
 }
 
 /**
- * Reclassify raw_events within a specific time range that match the given title.
- * Called when user reclassifies a title-group in the timeline detail modal.
+ * Reclassify raw_events AND merged_segments within a specific time range
+ * that match the given title. Called when user reclassifies a title-group
+ * in the timeline detail modal.
  */
-export function reclassifyByTitleInRange(startTime: string, endTime: string, title: string, newSubject: Subject): number {
+export function reclassifyByTitleInRange(date: string, startTime: string, endTime: string, title: string, newSubject: Subject): number {
+  // 1. Update raw_events
   const result = db?.run(
     'UPDATE raw_events SET subject = ? WHERE timestamp >= ? AND timestamp <= ? AND title = ?',
     [newSubject, startTime, endTime, title]
   )
+
+  // 2. Update exploded children in merged_segments (same title, same time range)
+  db?.run(
+    'UPDATE merged_segments SET subject = ? WHERE date = ? AND is_exploded = 1 AND title = ? AND start_time >= ? AND end_time <= ?',
+    [newSubject, date, title, startTime, endTime]
+  )
+
+  // 3. Recalculate affected parent segments' subject (take the dominant child subject)
+  const parents = db?.exec(
+    `SELECT DISTINCT parent_id FROM merged_segments
+     WHERE date = ? AND is_exploded = 1 AND title = ? AND start_time >= ? AND end_time <= ?`,
+    [date, title, startTime, endTime]
+  )
+  if (parents && parents[0]) {
+    for (const row of parents[0].values) {
+      const pid = row[0] as number
+      if (pid == null) continue
+      const dom = db?.exec(
+        'SELECT subject FROM merged_segments WHERE parent_id = ? GROUP BY subject ORDER BY SUM(duration) DESC LIMIT 1',
+        [pid]
+      )
+      if (dom && dom[0] && dom[0].values.length > 0) {
+        db?.run('UPDATE merged_segments SET subject = ? WHERE id = ? AND is_exploded = 0', [dom[0].values[0][0], pid])
+      }
+    }
+  }
+
   save()
   return result?.[0]?.changes ?? 0
 }

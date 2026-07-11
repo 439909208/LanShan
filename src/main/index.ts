@@ -130,7 +130,7 @@ function registerIpcHandlers(): void {
     }
   })
   ipcMain.handle('reclassify-by-title-in-range', (_event, date: string, startTime: string, endTime: string, title: string, newSubject: Subject) => {
-    reclassifyByTitleInRange(startTime, endTime, title, newSubject)
+    reclassifyByTitleInRange(date, startTime, endTime, title, newSubject)
     // Don't call rebuildMergedSegments. Just recalculate daily_stats.
     const db = getDb()
     db?.run('DELETE FROM daily_stats WHERE date = ?', [date])
