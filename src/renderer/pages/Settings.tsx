@@ -153,6 +153,30 @@ export default function Settings(): React.ReactElement {
         </div>
       </div>
 
+      {/* Algorithm Mode */}
+      <div className="card">
+        <h3 className="text-base font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
+          ⚙️ 时间轴算法
+        </h3>
+        <div className="flex items-center justify-between py-2">
+          <div>
+            <p className="text-sm font-medium">合并模式</p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {settings.algorithm_mode === 'chain' ? '链式吸收（新）：小段链式左吸收，无初始分组' : '经典（旧）：同科目合并 + 短片段吸附'}
+            </p>
+          </div>
+          <select
+            value={settings.algorithm_mode || 'legacy'}
+            onChange={(e) => updateSetting('algorithm_mode', e.target.value)}
+            className="rounded-lg px-3 py-1.5 text-sm"
+            style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-light)' }}
+          >
+            <option value="legacy">经典（旧）</option>
+            <option value="chain">链式吸收（新）</option>
+          </select>
+        </div>
+      </div>
+
       {/* Classification Rules */}
       <ClassificationRules />
 

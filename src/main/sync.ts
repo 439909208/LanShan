@@ -334,7 +334,8 @@ export function rebuildMergedSegments(date: string): void {
   clearMergedSegments(date)
 
   // Merge algorithm — passes user overrides so Phase 4 can respect them
-  const merged = mergeSegments(rows, overrides.length > 0 ? overrides : undefined)
+  const algMode = (getSetting('algorithm_mode') || 'legacy') as MergeMode
+  const merged = mergeSegments(rows, overrides.length > 0 ? overrides : undefined, algMode)
 
   // Insert parent segments + exploded children
   for (const segment of merged) {
@@ -452,9 +453,148 @@ interface MergedEntry {
 
 type UserOverride = { start: string; end: string; subj: Subject }
 
-function mergeSegments(entries: RawEntry[], userOverrides?: UserOverride[]): MergedEntry[] {
+type MergeMode = 'legacy' | 'chain'
+
+/**
+ * Chain-based merge: no Phase 1 grouping, each raw event is its own segment.
+ * Large segments (>= 300s) keep their identity. Small segments (< 300s) form
+ * chains (gap ≤ 2 min). Each chain is absorbed into the nearest large on its
+ * LEFT if gap ≤ 10 min, otherwise discarded. No large segments → all smalls
+ * merge into one "其他" segment.
+ */
+function chainMerge(entries: RawEntry[]): MergedEntry[] {
   if (entries.length === 0) return []
 
+  const MIN_SEGMENT_SEC = 300
+  const SMALL_CHAIN_GAP_MS = 120_000    // 2 min
+  const LARGE_LINK_GAP_MS = 600_000     // 10 min
+  const isLarge = (seg: MergedEntry): boolean => seg.duration >= MIN_SEGMENT_SEC
+
+  const merged: MergedEntry[] = entries.map(entry => ({
+    start_time: entry.timestamp.toISOString(),
+    end_time: new Date(entry.timestamp.getTime() + entry.duration * 1000).toISOString(),
+    duration: entry.duration,
+    subject: entry.subject,
+    title: entry.title,
+    app: entry.app,
+    constituents: [{ subject: entry.subject, title: entry.title, app: entry.app, duration: entry.duration }],
+  }))
+
+  function absorb(target: MergedEntry, source: MergedEntry): void {
+    if (source.start_time < target.start_time) target.start_time = source.start_time
+    if (source.end_time > target.end_time) target.end_time = source.end_time
+    target.duration += source.duration
+    target.constituents.push(...source.constituents)
+  }
+
+  // Separate large segments from small ones
+  const larges: MergedEntry[] = []
+  const smalls: MergedEntry[] = []
+  for (const seg of merged) {
+    (isLarge(seg) ? larges : smalls).push(seg)
+  }
+
+  if (larges.length === 0) {
+    // No large → merge all smalls into one "其他" segment
+    if (smalls.length > 0) {
+      const fb: MergedEntry = {
+        ...smalls[0],
+        start_time: smalls[0].start_time,
+        end_time: smalls[smalls.length - 1].end_time,
+        subject: '其他' as Subject,
+      }
+      for (let i = 1; i < smalls.length; i++) {
+        if (smalls[i].end_time > fb.end_time) fb.end_time = smalls[i].end_time
+        fb.duration += smalls[i].duration
+        fb.constituents.push(...smalls[i].constituents)
+      }
+      return [fb]
+    }
+    return []
+  }
+
+  // Left-priority: build result by iterating larges and absorbing small chains
+  const result: MergedEntry[] = []
+  let si = 0
+
+  for (let li = 0; li < larges.length; li++) {
+    const large = larges[li]
+    const chain: MergedEntry[] = []
+
+    while (si < smalls.length) {
+      const sm = smalls[si]
+      if (new Date(sm.end_time).getTime() >= new Date(large.start_time).getTime()) break
+      if (chain.length > 0) {
+        const prev = chain[chain.length - 1]
+        if (new Date(sm.start_time).getTime() - new Date(prev.end_time).getTime() > SMALL_CHAIN_GAP_MS) {
+          // Chain break → absorb completed chain
+          const leftLarge = li > 0 ? larges[li - 1] : large
+          const gap = li > 0
+            ? new Date(chain[0].start_time).getTime() - new Date(leftLarge.end_time).getTime()
+            : new Date(large.start_time).getTime() - new Date(chain[chain.length - 1].end_time).getTime()
+          if (gap >= 0 && gap <= LARGE_LINK_GAP_MS) {
+            for (const s of chain) absorb(leftLarge, s)
+          }
+          chain.length = 0
+        }
+      }
+      chain.push(sm)
+      si++
+    }
+
+    // Flush chain
+    if (chain.length > 0) {
+      const leftLarge = li > 0 ? larges[li - 1] : large
+      const gap = li > 0
+        ? new Date(chain[0].start_time).getTime() - new Date(leftLarge.end_time).getTime()
+        : new Date(large.start_time).getTime() - new Date(chain[chain.length - 1].end_time).getTime()
+      if (gap >= 0 && gap <= LARGE_LINK_GAP_MS) {
+        for (const s of chain) absorb(leftLarge, s)
+      }
+    }
+    result.push(large)
+  }
+
+  // Tail smalls after last large
+  if (si < smalls.length) {
+    const tail: MergedEntry[] = []
+    while (si < smalls.length) {
+      const sm = smalls[si]
+      if (tail.length > 0) {
+        const prev = tail[tail.length - 1]
+        if (new Date(sm.start_time).getTime() - new Date(prev.end_time).getTime() > SMALL_CHAIN_GAP_MS) {
+          const lastLarge = larges[larges.length - 1]
+          const tailGap = new Date(tail[0].start_time).getTime() - new Date(lastLarge.end_time).getTime()
+          if (tailGap >= 0 && tailGap <= LARGE_LINK_GAP_MS) {
+            for (const s of tail) absorb(lastLarge, s)
+          }
+          tail.length = 0
+        }
+      }
+      tail.push(sm)
+      si++
+    }
+    if (tail.length > 0) {
+      const lastLarge = larges[larges.length - 1]
+      const tailGap = new Date(tail[0].start_time).getTime() - new Date(lastLarge.end_time).getTime()
+      if (tailGap >= 0 && tailGap <= LARGE_LINK_GAP_MS) {
+        for (const s of tail) absorb(lastLarge, s)
+      }
+    }
+  }
+
+  return result
+}
+
+function mergeSegments(entries: RawEntry[], userOverrides?: UserOverride[], mode?: MergeMode): MergedEntry[] {
+  if (entries.length === 0) return []
+
+  // Chain mode: no Phase 1 grouping, left-priority chain absorption
+  if (mode === 'chain') {
+    return chainMerge(entries)
+  }
+
+  // Legacy mode: Phase 1 grouping + nearest-neighbor absorption
   const merged: MergedEntry[] = []
   let current: {
     subject: Subject
