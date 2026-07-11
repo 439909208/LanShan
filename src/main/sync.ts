@@ -15,6 +15,7 @@ import {
   getSetting,
   setSetting,
   getMergedSegments,
+  getDailyStats,
   getUTCRange,
 } from './database'
 
@@ -253,6 +254,37 @@ export async function syncFullToday(): Promise<void> {
       parts.push('"' + (row[0] as string).substring(0, 60) + '":' + Math.round((row[1] as number) / 60) + 'min')
     }
     console.log('[sync-full] 英语 by title:', parts.join(', '))
+  }
+
+  // DIAG: per-subject totals from raw_events vs merged_segments vs daily_stats
+  const rawPerSubject = db.exec(
+    "SELECT subject, COALESCE(SUM(duration),0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject ORDER BY subject",
+    getUTCRange(today)
+  )
+  if (rawPerSubject && rawPerSubject[0]) {
+    const parts: string[] = []
+    for (const row of rawPerSubject[0].values) {
+      const s = row[0] as string
+      parts.push(s + ':' + Math.round((row[1] as number) / 60) + 'min')
+    }
+    console.log('[sync-full] DIAG raw_events:', parts.join(', '))
+  }
+  const msPerSubject = db.exec(
+    "SELECT subject, COALESCE(SUM(duration),0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject ORDER BY subject",
+    [today]
+  )
+  if (msPerSubject && msPerSubject[0]) {
+    const parts: string[] = []
+    for (const row of msPerSubject[0].values) {
+      const s = row[0] as string
+      parts.push(s + ':' + Math.round((row[1] as number) / 60) + 'min')
+    }
+    console.log('[sync-full] DIAG merged_segments:', parts.join(', '))
+  }
+  const dsPerSubject = getDailyStats(today)
+  if (dsPerSubject.length > 0) {
+    const parts = dsPerSubject.map(d => d.subject + ':' + Math.round(d.total_seconds / 60) + 'min')
+    console.log('[sync-full] DIAG daily_stats:', parts.join(', '))
   }
 
   save()
@@ -570,12 +602,24 @@ function mergeSegments(entries: RawEntry[]): MergedEntry[] {
     }
   }
 
-  // Recalculate duration: only count constituents matching the segment's subject
-  // (absorbed non-same-subject fragments should not inflate the displayed duration)
+  // Recalculate segment subject and duration based on the dominant subject
+  // (the one with the highest total duration across all its constituents).
+  // This prevents the first event's subject from incorrectly labelling the segment
+  // when a different subject actually dominates (e.g. 休闲 23m + 英语 68m → 英语).
   for (const seg of merged) {
-    seg.duration = seg.constituents
-      .filter(c => c.subject === seg.subject)
-      .reduce((sum, c) => sum + c.duration, 0)
+    // Group same-subject constituents and sum their durations
+    const bySubject = new Map<string, number>()
+    for (const c of seg.constituents) {
+      bySubject.set(c.subject, (bySubject.get(c.subject) || 0) + c.duration)
+    }
+    // Pick the subject with the highest total
+    let bestSubject = seg.subject
+    let bestDur = 0
+    for (const [subj, dur] of bySubject) {
+      if (dur > bestDur) { bestDur = dur; bestSubject = subj }
+    }
+    seg.duration = bestDur
+    seg.subject = bestSubject as Subject
   }
 
   // Final gap-fill: stretch any adjacent segments with < 10 min gap to touch visually

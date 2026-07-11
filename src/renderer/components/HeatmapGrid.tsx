@@ -213,21 +213,22 @@ function DayTimelineModal({ date, onClose }: { date: string; onClose: () => void
   const [addRule, setAddRule] = useState(false)
 
   async function loadGroups() {
-    const segs: any[] = await window.lanshan.getMergedSegments(date)
+    const stats: { title: string; duration: number; subject: string }[] = await window.lanshan.getRawTitleStats(date)
     const map = new Map<string, { title: string; duration: number; subjects: Set<string> }>()
-    for (const seg of segs) {
-      if (seg.is_exploded) continue
-      const key = seg.title || seg.app
+    for (const row of stats) {
+      if (!row.title) continue
+      const key = row.title
       const cur = map.get(key)
       if (cur) {
-        cur.duration += seg.duration
-        cur.subjects.add(seg.subject)
+        cur.duration += row.duration
+        cur.subjects.add(row.subject)
       } else {
-        map.set(key, { title: key, duration: seg.duration, subjects: new Set([seg.subject]) })
+        map.set(key, { title: key, duration: row.duration, subjects: new Set([row.subject]) })
       }
     }
     setGroups(Array.from(map.values())
       .map(g => ({ ...g, subjects: Array.from(g.subjects) }))
+      .filter(g => g.duration >= 180)  // 隐藏 ≤ 3 分钟的零星活动
       .sort((a, b) => b.duration - a.duration))
   }
 

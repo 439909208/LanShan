@@ -459,7 +459,13 @@ export function insertRawEvent(event: Omit<RawEvent, 'id'>): void {
   db?.run(
     `INSERT INTO raw_events (aw_id, timestamp, duration, app, title, url, subject)
      VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(aw_id) DO UPDATE SET subject = excluded.subject`,
+     ON CONFLICT(aw_id) DO UPDATE SET
+       timestamp = excluded.timestamp,
+       duration = excluded.duration,
+       app = excluded.app,
+       title = excluded.title,
+       url = excluded.url,
+       subject = excluded.subject`,
     [event.aw_id, event.timestamp.toISOString(), event.duration, event.app, event.title, event.url, event.subject]
   )
 }
@@ -547,6 +553,20 @@ export function getTotalSecondsToday(date: string): number {
     return result[0].values[0][0] as number
   }
   return 0
+}
+
+export function getRawTitleStats(date: string): { title: string; duration: number; subject: Subject }[] {
+  const [utcStart, utcEnd] = getUTCRange(date)
+  const result = db?.exec(
+    "SELECT title, COALESCE(SUM(duration), 0) as sec, subject FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY title, subject ORDER BY sec DESC",
+    [utcStart, utcEnd]
+  )
+  if (!result || !result[0]) return []
+  return result[0].values.map(row => ({
+    title: row[0] as string,
+    duration: row[1] as number,
+    subject: row[2] as Subject,
+  }))
 }
 
 export function reclassifySegment(segmentId: number, newSubject: Subject): void {

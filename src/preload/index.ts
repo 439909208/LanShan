@@ -22,6 +22,7 @@ const api = {
   getWeekStats: (days: number): Promise<any[]> => ipcRenderer.invoke('get-week-stats', days),
   getYearHeatmap: (year: number): Promise<any[]> => ipcRenderer.invoke('get-year-heatmap', year),
   getDailyBreakdown: (date: string): Promise<any[]> => ipcRenderer.invoke('get-daily-breakdown', date),
+  getRawTitleStats: (date: string): Promise<{ title: string; duration: number; subject: string }[]> => ipcRenderer.invoke('get-raw-title-stats', date),
   getAchievements: (): Promise<any[]> => ipcRenderer.invoke('get-achievements'),
   getNewUnlocks: (): Promise<string[]> => ipcRenderer.invoke('get-new-unlocks'),
 

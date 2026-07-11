@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
-import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange } from './database'
+import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, getRawTitleStats, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange } from './database'
 import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
@@ -101,7 +101,11 @@ function registerIpcHandlers(): void {
     if (segDate) {
       const db = getDb()
       db?.run('DELETE FROM daily_stats WHERE date = ?', [segDate])
-      const sums = db?.exec('SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject', [segDate])
+      const [utcStart, utcEnd] = getUTCRange(segDate)
+      const sums = db?.exec(
+        "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject",
+        [utcStart, utcEnd]
+      )
       if (sums && sums[0]) {
         for (const row of sums[0].values) {
           updateDailyStats(segDate, row[0] as Subject, row[1] as number)
@@ -114,7 +118,11 @@ function registerIpcHandlers(): void {
     // Don't call rebuildMergedSegments. Just recalculate daily_stats.
     const db = getDb()
     db?.run('DELETE FROM daily_stats WHERE date = ?', [date])
-    const sums = db?.exec('SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject', [date])
+    const [utcStart, utcEnd] = getUTCRange(date)
+    const sums = db?.exec(
+      "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject",
+      [utcStart, utcEnd]
+    )
     if (sums && sums[0]) {
       for (const row of sums[0].values) {
         updateDailyStats(date, row[0] as Subject, row[1] as number)
@@ -126,7 +134,11 @@ function registerIpcHandlers(): void {
     // Don't call rebuildMergedSegments. Just recalculate daily_stats.
     const db = getDb()
     db?.run('DELETE FROM daily_stats WHERE date = ?', [date])
-    const sums = db?.exec('SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject', [date])
+    const [utcStart, utcEnd] = getUTCRange(date)
+    const sums = db?.exec(
+      "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject",
+      [utcStart, utcEnd]
+    )
     if (sums && sums[0]) {
       for (const row of sums[0].values) {
         updateDailyStats(date, row[0] as Subject, row[1] as number)
@@ -136,12 +148,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle('split-segment', (_event, segmentId: number, splitTime: string) => {
     const segDate = splitSegment(segmentId, splitTime)
     if (segDate) {
-      // Recalculate daily_stats from merged_segments (don't use rebuildMergedSegments, which would undo the split)
+      // Recalculate daily_stats from raw_events (don't use rebuildMergedSegments, which would undo the split)
       const db = getDb()
       db?.run('DELETE FROM daily_stats WHERE date = ?', [segDate])
+      const [utcStart, utcEnd] = getUTCRange(segDate)
       const sums = db?.exec(
-        'SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject',
-        [segDate]
+        "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject",
+        [utcStart, utcEnd]
       )
       if (sums && sums[0]) {
         for (const row of sums[0].values) {
@@ -156,9 +169,10 @@ function registerIpcHandlers(): void {
     if (ok && segDate) {
       const db = getDb()
       db?.run('DELETE FROM daily_stats WHERE date = ?', [segDate])
+      const [utcStart, utcEnd] = getUTCRange(segDate)
       const sums = db?.exec(
-        'SELECT subject, COALESCE(SUM(duration), 0) FROM merged_segments WHERE date = ? AND is_exploded = 0 GROUP BY subject',
-        [segDate]
+        "SELECT subject, COALESCE(SUM(duration), 0) FROM raw_events WHERE timestamp >= ? AND timestamp < ? AND subject IS NOT NULL GROUP BY subject",
+        [utcStart, utcEnd]
       )
       if (sums && sums[0]) {
         for (const row of sums[0].values) {
@@ -168,6 +182,7 @@ function registerIpcHandlers(): void {
     }
   })
   ipcMain.handle('get-daily-breakdown', (_event, date: string) => getDailyBreakdown(date))
+  ipcMain.handle('get-raw-title-stats', (_event, date: string) => getRawTitleStats(date))
   ipcMain.handle('get-year-heatmap', (_event, year: number) => getYearHeatmapData(year))
   ipcMain.handle('get-achievements', () => getAchievementProgress())
 

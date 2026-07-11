@@ -118,6 +118,10 @@ ActivityWatch（localhost:5600）
 - **数据源**: ActivityWatch REST API（`localhost:5600`）
 - **打包**: electron-builder（portable）
 
+## 📖 详细架构
+
+完整的项目架构、数据流、合并算法、数据库设计、排查指南见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 📄 许可证
 
 [MIT](LICENSE)
