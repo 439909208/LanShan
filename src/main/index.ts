@@ -1,10 +1,21 @@
 import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
-import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, getRawTitleStats, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange } from './database'
+import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, getRawTitleStats, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange, getMakeupFills, getMakeupAvailability, applyMakeup, undoMakeup } from './database'
 import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments, rebuildMergedSegmentsInRange } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
+import { initFocus, shutdownFocus, setFocusHooks, startFocusSession, stopFocusSession, getFocusState, setFocusWhitelist, getRunningApps, resolveAppPath, getAppIcon, launchFocusApp, restoreTaskbarNow, FocusApp } from './focus'
+
+// 全局异常兜底：任何未捕获异常/未处理拒绝都不让主进程直接崩溃（曾导致专注中闪退、任务栏残留）
+process.on('uncaughtException', (err) => {
+  console.error('[main] 未捕获异常:', err)
+  // 尽力恢复任务栏，避免异常退出后任务栏残留隐藏
+  void restoreTaskbarNow()
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] 未处理的 Promise 拒绝:', reason)
+})
 const isDev = !app.isPackaged
 
 let mainWindow: BrowserWindow | null = null
@@ -186,6 +197,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-daily-breakdown', (_event, date: string) => getDailyBreakdown(date))
   ipcMain.handle('get-raw-title-stats', (_event, date: string) => getRawTitleStats(date))
   ipcMain.handle('get-year-heatmap', (_event, year: number) => getYearHeatmapData(year))
+  ipcMain.handle('get-makeup-fills', (_event, year: number, month: number) => getMakeupFills(year, month))
+  ipcMain.handle('get-makeup-availability', (_event, date: string) => getMakeupAvailability(date))
+  ipcMain.handle('apply-makeup', (_event, date: string, subject: Subject) => applyMakeup(date, subject))
+  ipcMain.handle('undo-makeup', (_event, date: string, subject: Subject) => undoMakeup(date, subject))
   ipcMain.handle('get-achievements', () => getAchievementProgress())
 
   // Window controls
@@ -201,6 +216,39 @@ function registerIpcHandlers(): void {
   ipcMain.handle('sync-now', async () => {
     await syncFullToday()
     return true
+  })
+
+  // Focus mode (专注模式)
+  ipcMain.handle('get-focus-state', () => getFocusState())
+  ipcMain.handle('start-focus', (_event, durationMin: number) => startFocusSession(durationMin))
+  ipcMain.handle('stop-focus', () => {
+    try {
+      stopFocusSession()
+    } catch (err) {
+      console.error('[focus] stop-focus 异常:', err)
+      // 兜底：即使异常也要确保锁被拆掉
+      try { stopFocusSession() } catch { /* 忽略 */ }
+    }
+  })
+  ipcMain.handle('set-focus-whitelist', (_event, entries: FocusApp[]) => setFocusWhitelist(entries))
+  ipcMain.handle('get-running-apps', () => getRunningApps())
+  ipcMain.handle('resolve-app-path', (_event, name: string) => resolveAppPath(name))
+  ipcMain.handle('get-app-icon', (_event, name: string, path: string) => getAppIcon(name, path))
+  ipcMain.handle('launch-focus-app', (_event, name: string, titleMatch?: string) => launchFocusApp(name, titleMatch))
+  ipcMain.handle('quit-app', async () => {
+    // 专注桌面的逃生口：结束专注 + 完全退出应用
+    try {
+      stopFocusSession()
+    } catch (err) {
+      console.error('[focus] quit-app 异常:', err)
+    }
+    // 必须等任务栏恢复完成再退出（stopFocusSession 内是异步的，进程退出太快会来不及恢复）
+    try {
+      await restoreTaskbarNow()
+    } catch (err) {
+      console.error('[focus] 恢复任务栏失败:', err)
+    }
+    app.quit()
   })
   ipcMain.handle('get-classification-rules', () => getClassificationRules())
   ipcMain.handle('add-classification-rule', (_event, subject: Subject, keyword: string, matchField: string, priority: number) => {
@@ -254,6 +302,10 @@ app.whenReady().then(async () => {
   // Start background sync
   startSync()
 
+  // Focus mode: 注入主窗口钩子 + 恢复未完成的专注会话
+  setFocusHooks({ getMainWindow: () => mainWindow })
+  initFocus()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
@@ -271,6 +323,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   (app as any).isQuitting = true
   stopSync()
+  shutdownFocus()  // 保留持久化会话，重启后由 initFocus 恢复
   closeDatabase()
 })
 

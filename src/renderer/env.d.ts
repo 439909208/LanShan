@@ -1,5 +1,31 @@
 /// <reference types="vite/client" />
 
+/** 专注白名单条目：进程名（如 chrome.exe）+ 可选路径/显示名/窗口标题关键词 */
+interface FocusApp {
+  name: string
+  path?: string
+  title?: string
+  /** 窗口标题关键词：设置后仅当前台窗口标题包含该关键词时才放行（窗口级锁定） */
+  titleMatch?: string
+}
+
+/** 专注状态 */
+interface FocusState {
+  active: boolean
+  endAt: number
+  durationMin: number
+  remainingSec: number
+  whitelist: FocusApp[]
+}
+
+/** 专注倒计时推送 */
+interface FocusTick {
+  active: boolean
+  endAt: number
+  durationMin: number
+  remainingSec: number
+}
+
 interface LanshanApi {
   getSettings: () => Promise<Record<string, string>>
   setSetting: (key: string, value: string | number | boolean) => Promise<void>
@@ -15,6 +41,10 @@ interface LanshanApi {
   getMergedSegments: (date: string) => Promise<any[]>
   getWeekStats: (days: number) => Promise<any[]>
   getYearHeatmap: (year: number) => Promise<any[]>
+  getMakeupFills: (year: number, month: number) => Promise<any[]>
+  getMakeupAvailability: (date: string) => Promise<any[]>
+  applyMakeup: (date: string, subject: string) => Promise<{ ok: boolean; message: string; amount: number }>
+  undoMakeup: (date: string, subject: string) => Promise<void>
   getDailyBreakdown: (date: string) => Promise<any[]>
   getAchievements: () => Promise<any[]>
   getNewUnlocks: () => Promise<string[]>
@@ -38,6 +68,18 @@ interface LanshanApi {
   setAutoStart: (enable: boolean) => Promise<void>
   exportData: () => Promise<boolean>
   syncNow: () => Promise<boolean>
+
+  // Focus mode (专注模式)
+  getFocusState: () => Promise<FocusState>
+  startFocus: (durationMin: number) => Promise<boolean>
+  stopFocus: () => Promise<void>
+  setFocusWhitelist: (entries: FocusApp[]) => Promise<void>
+  getRunningApps: () => Promise<FocusApp[]>
+  resolveAppPath: (name: string) => Promise<string>
+  getAppIcon: (name: string, path: string) => Promise<string>
+  launchFocusApp: (name: string, titleMatch?: string) => Promise<void>
+  quitApp: () => Promise<void>
+  onFocusTick: (cb: (data: FocusTick) => void) => () => void
 }
 
 declare global {

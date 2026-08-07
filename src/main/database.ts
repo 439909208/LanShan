@@ -2,6 +2,8 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
+import { simulateMakeups, addDays, diffDays, dateStr, MAKEUP_WINDOW_DAYS, MAKEUP_FILL_ALL } from './makeup'
+import type { MakeupFill } from './makeup'
 
 let db: SqlJsDatabase | null = null
 const DATA_DIR = join(app.getPath('home'), '澜山数据')
@@ -102,6 +104,7 @@ const DEFAULT_SETTINGS: Record<string, string | number | boolean> = {
   tray_subject: '',  // current tray subject, '' = unset
   summer_start: '07-10',
   summer_end: '08-31',
+  focus_whitelist: '[]',  // 专注白名单 JSON：[{ name, path?, title? }]
 }
 
 export async function initDatabase(): Promise<void> {
@@ -250,10 +253,32 @@ function createTables(): void {
     )
   `)
 
+  // 补签（盈余回填）：手动/自动补签记录 + 用户标记"保持空白"的日期
+  db.run(`
+    CREATE TABLE IF NOT EXISTS makeup_fills (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      source_date TEXT NOT NULL,
+      manual INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS makeup_undone (
+      date TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      PRIMARY KEY (date, subject)
+    )
+  `)
+
   // Indexes for performance
   db.run('CREATE INDEX IF NOT EXISTS idx_raw_events_timestamp ON raw_events(timestamp)')
   db.run('CREATE INDEX IF NOT EXISTS idx_merged_date ON merged_segments(date)')
   db.run('CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_makeup_fills_date ON makeup_fills(date)')
 }
 
 function seedDefaults(): void {
@@ -914,14 +939,22 @@ export interface DayStats {
   total: number
 }
 
+/**
+ * 固定自然周统计（周一起始）：7 → 本周（周一~周日，未到的日期补 0），14 → 上周。
+ * 日期统一用本地时区字符串（与 sync 存储格式一致）。
+ */
 export function getWeekStats(days: number): DayStats[] {
-  const result: DayStats[] = []
+  const weekOffset = days >= 14 ? 1 : 0
   const today = new Date()
+  const monday = new Date(today)
+  // 周一=0 ... 周日=6
+  monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) - weekOffset * 7)
 
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today)
-    d.setDate(d.getDate() - i)
-    const dateStr = d.toISOString().split('T')[0]
+  const result: DayStats[] = []
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday)
+    d.setDate(monday.getDate() + i)
+    const dateStr = d.toLocaleDateString('sv-SE')
 
     const stats = getDailyStats(dateStr)
     const subjects: Record<string, number> = {}
@@ -1302,4 +1335,195 @@ export function closeDatabase(): void {
     db.close()
     db = null
   }
+}
+
+// ---- 补签（盈余回填）----
+// 只影响热力图展示层，不改动 daily_stats 原始数据。
+// 规则见 makeup.ts：盈余仅 7 天内有效，只有最近 7 天的空缺可补，先进先出。
+
+export interface MakeupFillRow {
+  date: string
+  subject: Subject
+  amount: number
+  sourceDate: string
+  manual: boolean
+}
+
+export interface MakeupAvailability {
+  subject: Subject
+  total: number         // 当日实际时长（秒）
+  need: number          // 当日缺口（秒）
+  existing: number      // 已补签秒数
+  available: number     // 当前可用盈余（秒）
+  gross: number         // 截至该日的累计盈余（所有日期超额总和，不随补签减少）
+  sourceDate: string    // 可用盈余中最旧的一笔来源日（补签展示用）
+  fillable: boolean     // 该日是否在补签范围内
+  scope: string         // 当前补签范围：all | month | week
+}
+
+/** 读取 [from, to] 内核心科目的日统计 */
+function getCoreStatsRange(from: string, to: string): { date: string; subject: Subject; total: number; target: number }[] {
+  const result = db?.exec(
+    'SELECT date, subject, total_seconds, target_seconds FROM daily_stats WHERE date >= ? AND date <= ? AND subject IN (?, ?, ?) ORDER BY date',
+    [from, to, ...CORE_SUBJECTS]
+  )
+  if (!result || result.length === 0) return []
+  return result[0].values.map(row => ({
+    date: row[0] as string,
+    subject: row[1] as Subject,
+    total: row[2] as number,
+    target: row[3] as number,
+  }))
+}
+
+function getFillRows(from: string, to: string): MakeupFillRow[] {
+  const result = db?.exec(
+    'SELECT date, subject, amount, source_date, manual FROM makeup_fills WHERE date >= ? AND date <= ? ORDER BY date',
+    [from, to]
+  )
+  if (!result || result.length === 0) return []
+  return result[0].values.map(row => ({
+    date: row[0] as string,
+    subject: row[1] as Subject,
+    amount: row[2] as number,
+    sourceDate: row[3] as string,
+    manual: Boolean(row[4]),
+  }))
+}
+
+function getUndoneSet(): Set<string> {
+  const result = db?.exec('SELECT date FROM makeup_undone')
+  const set = new Set<string>()
+  if (result) {
+    for (const row of result[0]?.values || []) set.add(row[0] as string)
+  }
+  return set
+}
+
+/** 补签范围：允许补哪些日期的空缺。makeup_scope = all(所有日期,默认) | month(当月) | week(近7天) */
+function getMakeupScope(anchor: string): { scope: string; fillFrom: string } {
+  const scope = getSetting('makeup_scope') ?? 'all'
+  if (scope === 'week') return { scope, fillFrom: addDays(anchor, -(MAKEUP_WINDOW_DAYS - 1)) }
+  if (scope === 'month') return { scope, fillFrom: anchor.slice(0, 7) + '-01' }
+  return { scope, fillFrom: MAKEUP_FILL_ALL }
+}
+
+/**
+ * 模拟起点：从该科目最早有数据的日期开始走（保证所有日期的盈余都统计上）。
+ */
+function getWalkStartDate(subject: Subject, anchor: string): string {
+  const r = db?.exec(
+    'SELECT MIN(d) FROM (SELECT MIN(date) d FROM daily_stats WHERE subject = ? UNION ALL SELECT MIN(date) d FROM makeup_fills WHERE subject = ?)',
+    [subject, subject]
+  )
+  const earliest = r?.[0]?.values?.[0]?.[0] as string | undefined
+  return earliest && earliest <= anchor ? earliest : addDays(anchor, -30)
+}
+
+/** 查询某月所有补签记录（热力图展示用） */
+export function getMakeupFills(year: number, month: number): MakeupFillRow[] {
+  const prefix = `${year}-${String(month).padStart(2, '0')}`
+  const result = db?.exec(
+    'SELECT date, subject, amount, source_date, manual FROM makeup_fills WHERE date LIKE ? ORDER BY date, subject',
+    [`${prefix}%`]
+  )
+  if (!result || result.length === 0) return []
+  return result[0].values.map(row => ({
+    date: row[0] as string,
+    subject: row[1] as Subject,
+    amount: row[2] as number,
+    sourceDate: row[3] as string,
+    manual: Boolean(row[4]),
+  }))
+}
+
+/** 查询某天各核心科目的补签可行性（补签弹窗用）
+ *  盈余池以"今天"为锚点统一计算：任何日期看到的可用盈余都是同一笔池子余额，
+ *  与查看的日期无关（只影响该日的缺口和补签资格）。 */
+export function getMakeupAvailability(date: string): MakeupAvailability[] {
+  const today = dateStr(new Date())
+  const scope = getMakeupScope(today)
+  const undone = getUndoneSet()
+
+  // 1) 统一池：每科一个池，以今天为锚点跑一遍模拟
+  const pools = new Map<Subject, { available: number; gross: number; sourceDate: string }>()
+  for (const subject of CORE_SUBJECTS) {
+    const from = getWalkStartDate(subject, today)
+    const results = simulateMakeups({
+      stats: getCoreStatsRange(from, today).filter(s => s.subject === subject).map(s => ({ date: s.date, total: s.total, target: s.target })),
+      existing: getFillRows(from, today).filter(f => f.subject === subject),
+      undoneDates: undone,
+      today,
+      defaultTarget: getTargetSeconds(subject),
+      generateNew: false,
+      validDays: -1,
+      fillFrom: scope.fillFrom,
+      startDate: from, // 关键：从最早数据日开始走，否则统一池只会统计最近 7 天的盈余
+    })
+    const d = results.find(r => r.date === today)
+    pools.set(subject, {
+      available: d?.balanceAfter ?? 0,
+      gross: d?.grossAfter ?? 0,
+      sourceDate: d?.poolAtEnd[0]?.source ?? date,
+    })
+  }
+
+  // 2) 被点日期的缺口与已有补签
+  const dayStats = getCoreStatsRange(date, date)
+  return CORE_SUBJECTS.map(subject => {
+    const stat = dayStats.find(s => s.subject === subject)
+    const total = stat?.total ?? 0
+    const target = stat?.target ?? getTargetSeconds(subject)
+    const existing = getFillRows(date, date).filter(f => f.subject === subject).reduce((s, f) => s + f.amount, 0)
+    const pool = pools.get(subject)!
+    return {
+      subject,
+      total,
+      need: Math.max(0, target - total),
+      existing,
+      available: pool.available,
+      gross: pool.gross,
+      sourceDate: pool.sourceDate,
+      fillable: date <= today && date >= scope.fillFrom,
+      scope: scope.scope,
+    }
+  })
+}
+
+/** 手动补签：把盈余补到指定日期的指定科目 */
+export function applyMakeup(date: string, subject: Subject): { ok: boolean; message: string; amount: number } {
+  if (!db) return { ok: false, message: '数据库未初始化', amount: 0 }
+  if (!CORE_SUBJECTS.includes(subject)) return { ok: false, message: '仅核心科目可补签', amount: 0 }
+
+  const today = dateStr(new Date())
+  if (diffDays(date, today) < 0) {
+    return { ok: false, message: '未来日期不能补签', amount: 0 }
+  }
+  const { fillFrom } = getMakeupScope(today)
+  if (date < fillFrom) {
+    return { ok: false, message: '该日不在当前补签范围内（设置页可调）', amount: 0 }
+  }
+
+  const avail = getMakeupAvailability(date).find(a => a.subject === subject)
+  if (!avail) return { ok: false, message: '该科目暂无数据', amount: 0 }
+  const remaining = avail.need - avail.existing
+  if (remaining <= 0) return { ok: false, message: '该科目当日已达标，无需补签', amount: 0 }
+  const amount = Math.min(remaining, avail.available)
+  if (amount <= 0) return { ok: false, message: '暂无可用盈余（盈余保留 7 天）', amount: 0 }
+
+  db.run(
+    'INSERT INTO makeup_fills (date, subject, amount, source_date, manual, created_at) VALUES (?, ?, ?, ?, 1, ?)',
+    [date, subject, amount, avail.sourceDate, new Date().toISOString()]
+  )
+  db.run('DELETE FROM makeup_undone WHERE date = ? AND subject = ?', [date, subject])
+  save()
+  return { ok: true, message: `已补签 ${Math.round(amount / 60)} 分钟`, amount }
+}
+
+/** 撤销某天某科的补签（之后自动回填会跳过该日） */
+export function undoMakeup(date: string, subject: Subject): void {
+  if (!db) return
+  db.run('DELETE FROM makeup_fills WHERE date = ? AND subject = ?', [date, subject])
+  db.run('INSERT OR REPLACE INTO makeup_undone (date, subject) VALUES (?, ?)', [date, subject])
+  save()
 }

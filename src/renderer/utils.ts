@@ -77,3 +77,14 @@ export function formatShortDuration(seconds: number): string {
   if (m > 0) return `${m}m${s}s`
   return `${s}s`
 }
+
+/** 倒计时格式：mm:ss 或 h:mm:ss */
+export function formatCountdown(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  const mm = String(m).padStart(2, '0')
+  const ss = String(sec).padStart(2, '0')
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
+}

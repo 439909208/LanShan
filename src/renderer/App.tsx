@@ -3,10 +3,13 @@ import { Routes, Route, NavLink } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Achievements from './pages/Achievements'
 import Settings from './pages/Settings'
+import Focus from './pages/Focus'
+import FocusOverlay from './pages/FocusOverlay'
 import ToastContainer from './components/Toast'
 
 const navItems = [
-  { path: '/', label: '概览', icon: '📊' },
+  { path: '/', label: '主页', icon: '🏠' },
+  { path: '/focus', label: '专注', icon: '🍅' },
   { path: '/settings', label: '设置', icon: '⚙️' },
 ]
 
@@ -100,6 +103,8 @@ function App(): React.ReactElement {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/achievements" element={<Achievements />} />
+          <Route path="/focus" element={<Focus />} />
+          <Route path="/focus-overlay" element={<FocusOverlay />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
       </main>

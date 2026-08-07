@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react'
+import { getSubjectIcon, formatShortDuration } from '../utils'
 
 export default function Settings(): React.ReactElement {
   const [settings, setSettings] = useState<Record<string, string>>({})
+  const [surplus, setSurplus] = useState<{ subject: string; gross: number; available: number }[]>([])
 
   useEffect(() => {
     window.lanshan.getSettings().then(setSettings)
+    const today = new Date().toLocaleDateString('sv-SE')
+    window.lanshan.getMakeupAvailability(today).then((av: any[]) => setSurplus(av))
   }, [])
 
   const updateSetting = (key: string, value: string | number | boolean) => {
@@ -116,6 +120,58 @@ export default function Settings(): React.ReactElement {
         ))}
         <p className="text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
           挑战目标自动 = 基础目标 × 1.5
+        </p>
+      </div>
+
+      {/* 补签范围 */}
+      <div className="card">
+        <h3 className="text-base font-medium mb-5" style={{ color: 'var(--text-secondary)' }}>
+          📝 补签范围
+        </h3>
+        <div className="flex gap-2">
+          {[
+            { key: 'all', label: '所有日期' },
+            { key: 'month', label: '当月' },
+            { key: 'week', label: '近 7 天' },
+          ].map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => updateSetting('makeup_scope', opt.key)}
+              className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+              style={
+                (settings['makeup_scope'] ?? 'all') === opt.key
+                  ? { background: 'var(--accent)', color: 'white' }
+                  : { background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-light)' }
+              }
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
+          这里选择<b>哪些日期的空缺可以补签</b>；盈余统计见下方。
+        </p>
+      </div>
+
+      {/* 盈余统计 */}
+      <div className="card">
+        <h3 className="text-base font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
+          💰 盈余统计
+        </h3>
+        {surplus.map(s => (
+          <div key={s.subject} className="flex items-center justify-between py-1.5 text-sm">
+            <span className="flex items-center gap-2">
+              <span>{getSubjectIcon(s.subject)}</span> {s.subject}
+            </span>
+            <span className="tabular-nums" style={{ color: '#fbbf24' }}>
+              累计盈余 {formatShortDuration(s.gross)}
+              {s.available < s.gross && `（可用 ${formatShortDuration(s.available)}）`}
+            </span>
+          </div>
+        ))}
+        <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+          所有日期里，某天某科超过目标的时间都会累积为该科的盈余储备，
+          可在补签范围内用于填补空缺（仪表盘进度条末尾的金光 = 当天该科的盈余）。
         </p>
       </div>
 

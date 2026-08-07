@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { Subject } from '../main/database'
+import type { FocusApp, FocusState, FocusTick } from '../main/focus'
 
 const api = {
   // Settings
@@ -21,6 +22,11 @@ const api = {
   getMergedSegments: (date: string): Promise<any[]> => ipcRenderer.invoke('get-merged-segments', date),
   getWeekStats: (days: number): Promise<any[]> => ipcRenderer.invoke('get-week-stats', days),
   getYearHeatmap: (year: number): Promise<any[]> => ipcRenderer.invoke('get-year-heatmap', year),
+  getMakeupFills: (year: number, month: number): Promise<any[]> => ipcRenderer.invoke('get-makeup-fills', year, month),
+  getMakeupAvailability: (date: string): Promise<any[]> => ipcRenderer.invoke('get-makeup-availability', date),
+  applyMakeup: (date: string, subject: Subject): Promise<{ ok: boolean; message: string; amount: number }> =>
+    ipcRenderer.invoke('apply-makeup', date, subject),
+  undoMakeup: (date: string, subject: Subject): Promise<void> => ipcRenderer.invoke('undo-makeup', date, subject),
   getDailyBreakdown: (date: string): Promise<any[]> => ipcRenderer.invoke('get-daily-breakdown', date),
   getRawTitleStats: (date: string): Promise<{ title: string; duration: number; subject: string }[]> => ipcRenderer.invoke('get-raw-title-stats', date),
   getAchievements: (): Promise<any[]> => ipcRenderer.invoke('get-achievements'),
@@ -53,6 +59,22 @@ const api = {
   setAutoStart: (enable: boolean): Promise<void> => ipcRenderer.invoke('set-auto-start', enable),
   exportData: (): Promise<boolean> => ipcRenderer.invoke('export-data'),
   syncNow: (): Promise<boolean> => ipcRenderer.invoke('sync-now'),
+
+  // Focus mode (专注模式)
+  getFocusState: (): Promise<FocusState> => ipcRenderer.invoke('get-focus-state'),
+  startFocus: (durationMin: number): Promise<boolean> => ipcRenderer.invoke('start-focus', durationMin),
+  stopFocus: (): Promise<void> => ipcRenderer.invoke('stop-focus'),
+  setFocusWhitelist: (entries: FocusApp[]): Promise<void> => ipcRenderer.invoke('set-focus-whitelist', entries),
+  getRunningApps: (): Promise<FocusApp[]> => ipcRenderer.invoke('get-running-apps'),
+  resolveAppPath: (name: string): Promise<string> => ipcRenderer.invoke('resolve-app-path', name),
+  getAppIcon: (name: string, path: string): Promise<string> => ipcRenderer.invoke('get-app-icon', name, path),
+  launchFocusApp: (name: string, titleMatch?: string): Promise<void> => ipcRenderer.invoke('launch-focus-app', name, titleMatch),
+  quitApp: (): Promise<void> => ipcRenderer.invoke('quit-app'),
+  onFocusTick: (cb: (data: FocusTick) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, data: FocusTick) => cb(data)
+    ipcRenderer.on('focus-tick', listener)
+    return () => { ipcRenderer.removeListener('focus-tick', listener) }
+  },
 }
 
 contextBridge.exposeInMainWorld('lanshan', api)

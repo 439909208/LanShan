@@ -10,3 +10,6 @@ release/
 # Design documents — not for public repo
 学习伴侣软件项目设计.md
 成就系统实现说明.md
+
+# Local tooling
+.zcode/

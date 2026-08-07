@@ -81,7 +81,7 @@ export default function Dashboard(): React.ReactElement {
       setMaxConsecutive(maxConsec)
       setTotalAllTime(totalAll)
       setWeekData(week)
-      setPrevWeekData(prevWeek.slice(0, 7))
+      setPrevWeekData(prevWeek)
 
       const progressData: SubjectProgress[] = coreList.map((subject: string) => {
         const stat = stats.find((s: any) => s.subject === subject)
@@ -194,9 +194,14 @@ export default function Dashboard(): React.ReactElement {
             </div>
           </div>
           <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '2.3' }}>
-            <h3 className="text-sm font-medium mb-3 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
-              近 7 天趋势
-            </h3>
+            <div className="flex items-baseline justify-between mb-3 flex-shrink-0">
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                本周趋势
+              </h3>
+              <span className="text-xs tabular-nums" style={{ color: 'var(--text-muted)' }}>
+                {weekData.length === 7 ? `${fmtMonthDay(weekData[0].date)}（周一）– ${fmtMonthDay(weekData[6].date)}（周日）` : ''}
+              </span>
+            </div>
             <div className="flex-1 min-h-0 relative">
               <WeekTrendChart
                 data={weekData}
@@ -216,6 +221,12 @@ export default function Dashboard(): React.ReactElement {
       {showAchievements && <AchievementModal onClose={() => setShowAchievements(false)} />}
     </div>
   )
+}
+
+/** 'YYYY-MM-DD' → 'M月d日' */
+function fmtMonthDay(dateStr: string): string {
+  const [, m, d] = dateStr.split('-')
+  return `${parseInt(m, 10)}月${parseInt(d, 10)}日`
 }
 
 /** Mini data card for the top row */
@@ -243,6 +254,7 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
   const percent = Math.min((totalSeconds / targetSeconds) * 100, 100)
   const remaining = Math.max(targetSeconds - totalSeconds, 0)
   const exceedAmount = Math.max(totalSeconds - targetSeconds, 0)
+  const hasTodaySurplus = totalSeconds > targetSeconds
 
   return (
     <div className="card flex flex-col gap-4 py-6 px-6 h-full relative overflow-hidden">
@@ -285,14 +297,14 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
         {exceeded && <span className="text-xl" style={{ color: '#fbbf24' }}>✨</span>}
       </div>
 
-      {/* Simple progress bar */}
+      {/* 今日进度条：当天该科有盈余时，末尾渐变金光 */}
       <div className="h-4 rounded-full overflow-hidden" style={{ background: 'var(--progress-track)' }}>
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{
             width: `${percent}%`,
-            background: achieved && exceeded
-              ? `linear-gradient(90deg, ${color}, #fbbf24)`
+            background: hasTodaySurplus
+              ? `linear-gradient(90deg, ${color} 60%, #fbbf24 100%)`
               : color,
           }}
         />
@@ -300,12 +312,15 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
 
       {/* Status message */}
       <p
-        className="text-xs"
+        className="text-xs flex items-center gap-1 flex-wrap"
         style={{ color: achieved ? (exceeded ? '#fbbf24' : '#22c55e') : 'var(--text-muted)' }}
       >
         {!achieved && `还差 ${formatDuration(remaining)} 达标`}
         {achieved && !exceeded && '今日目标已达成 ✓'}
-        {exceeded && `超额 ${Math.round((totalSeconds / targetSeconds) * 100)}%！+${formatDuration(exceedAmount)}`}
+        {exceeded && `超额 ${Math.round((totalSeconds / targetSeconds) * 100)}%！`}
+        {hasTodaySurplus && (
+          <span style={{ color: '#fbbf24' }}>✨ 今日盈余 +{formatDuration(exceedAmount)}</span>
+        )}
       </p>
     </div>
   )
