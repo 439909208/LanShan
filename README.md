@@ -1,40 +1,44 @@
-# 🍃 澜山 — 学习时长统计工具
+# 🍃 Lanshan — Study Time Tracker
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Windows 桌面学习伴侣，后台默默记录学习时长，打开就是漂亮的统计面板。
+A Windows desktop study companion that quietly tracks your study time in the background and presents a clean, motivating statistics dashboard.
 
-## ✨ 功能
+> Note: the application UI is currently in Chinese (⚡ 物理 = Physics, 📐 数学 = Math, 📖 英语 = English).
 
-- 📊 **仪表盘** — 三科进度条（双档目标 + 超额金光）、科目环形图、7 天趋势折线图
-- 🔥 **热力图** — 按科目达标数 3 级着色，按月视图，悬停/点击交互
-- 🏆 **成就系统** — 38 个成就（含隐藏），自动解锁 + Toast 弹窗
-- 🖱 **托盘快捷切换** — 右键切换当前科目，图标跟随变色，覆盖网盘模糊条目
-- 🕐 **今日时间轴** — 横向 24h 滚动，智能合并，未分类条目可手动标记
-- 🌗 **浅色/深色主题** — CSS 变量双主题切换
-- 📋 **分类规则管理** — 设置页自定义关键词规则（标题/进程名/URL）
-- 🔒 **数据完全本地** — SQLite 存储，不上传任何服务器
+## ✨ Features
 
-## 🚀 快速开始
+- 📊 **Dashboard** — per-subject progress cards (dual-tier targets + gold glow when today's session has surplus), subject ring chart, 7-day trend chart
+- 🔥 **Heatmap** — month view colored by how many subject targets were met, hover/click interactions, surplus makeup support
+- 🍅 **Focus Mode** — fullscreen focus desktop with window-level locking; non-whitelisted windows are closed automatically; Esc / global hotkey escape hatch
+- 💰 **Makeup System** — over-target time accumulates into a per-subject surplus pool; manually fill gaps in the heatmap; filled cells show a dot marker
+- 🏆 **Achievements** — 38 achievements (incl. hidden ones), auto-unlock with toast notifications
+- 🖱 **Tray Quick Switch** — switch the current subject from the system tray; the tray icon color follows; overrides ambiguous entries
+- 🕐 **Daily Timeline** — horizontal 24h scrolling view, smart segment merging, manual reclassification of unclassified entries
+- 🌗 **Light / Dark Theme** — CSS-variable dual themes
+- 📋 **Classification Rules** — custom keyword rules (title / process / URL) in Settings
+- 🔒 **Fully Local** — SQLite storage, nothing leaves your machine
+
+## 🚀 Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-> 前提：需要安装并运行 [ActivityWatch](https://activitywatch.net/)（`localhost:5600`）
+> Prerequisite: install and run [ActivityWatch](https://activitywatch.net/) (served at `localhost:5600`).
 
-## 📦 打包
+## 📦 Packaging
 
 ```bash
 npm run pack
 ```
 
-`release/澜山.exe` 即绿色免安装版。
+The portable build is emitted as `release/澜山.exe` — no installation needed.
 
-## 🏗 技术架构
+## 🏗 Architecture
 
-### 双进程架构
+### Dual-process design
 
 ```
 ┌─────────────────────────┐     IPC      ┌─────────────────────────┐
@@ -44,84 +48,102 @@ npm run pack
 │  ├─ SQLite database     │             │  ├─ Heatmap             │
 │  ├─ System tray         │             │  ├─ Achievements        │
 │  ├─ Classification eng. │             │  ├─ Timeline            │
-│  └─ Reminder service    │             │  └─ Settings            │
-└─────────────────────────┘             └─────────────────────────┘
+│  ├─ Reminder service    │             │  ├─ Focus mode          │
+│  ├─ Focus overlay       │             │  └─ Settings            │
+│  ├─ Makeup engine       │             └─────────────────────────┘
+│  └─ PowerShell helper   │
+└─────────────────────────┘
 ```
 
-### 数据流
+### Data flow
 
 ```
-ActivityWatch（localhost:5600）
-        │ 每 30s / 手动刷新
+ActivityWatch (localhost:5600)
+        │ every 30s / manual refresh
         ▼
-  拉取窗口事件（标题 + 进程名 + URL）
+Fetch window events (title + process + URL)
         │
         ▼
-  分类引擎：关键词匹配 → 托盘覆盖 → 模糊检测
+Classification engine: keyword match → tray override → fuzzy detection
         │
         ▼
-  SQLite raw_events → merged_segments → daily_stats
+SQLite raw_events → merged_segments → daily_stats
         │
         ▼
-  前端 Recharts 渲染 / 成就检测 / 热力图计算
+Frontend rendering (Recharts) / achievement checks / heatmap computation
 ```
 
-### 分类系统
+### Classification system
 
 ```
-优先级：标题关键词 > 托盘当前科目 > 模糊检测 > 跳过
+Priority: title keyword > tray subject > fuzzy detection > skip
 
-标题关键词： "小火车数学" → 📐 数学
-            "FREE高考英语" → 📖 英语
-            "夏梦迪物理"  → ⚡ 物理
+Title keywords:  "Physics Lecture 03"   → ⚡ Physics
+                 "Math Homework"        → 📐 Math
+                 "English Listening"    → 📖 English
 
-托盘覆盖：   百度网盘"视频播放" + 托盘设为物理 → ⚡ 物理
+Tray override:   Video player + tray set to Physics → ⚡ Physics
 
-模糊检测：   百度网盘"视频播放" + 无托盘 → ❓ 未分类（可手动标记）
+Fuzzy detection: Video player + no tray subject → ❓ Unclassified (mark manually)
 
-跳过：      微信、资源管理器、锁屏等非学习条目 → 不入库
+Skipped:         chat apps, file explorer, lock screen, etc. → not recorded
 ```
 
-### 成就系统（38 个）
+### Focus Mode (🍅)
 
-| 分组 | 成就 | 检测维度 |
-|------|------|---------|
-| 🌱 累计学习 | 破土(30h) → 抽枝(100h) → 成木(250h) | 总时长累计 |
-| 🔥 连续打卡 | 三日火(3d) → 七日焰(7d) → 双周燃(14d) | 连续天数 |
-| ⚡ 物理 / 📐 数学 / 📖 英语 | 初涉→半程→凌顶 | 单科累计时长 |
-| 🌊 单日爆发 | 一日澜山(6h) → 登顶(8h) | 单日总时长 |
-| 🌄 晨行者 | 初曙(5d) → 晨光(10d) → 黎常(18d) | 首段学习 < 7:00 |
-| 🌙 夜航人 | 晚灯(5d) → 夜烛(10d) → 星伴(18d) | 末段学习 > 22:00 |
-| 🎯 极限专注 | 入定(3d≥2h) → 忘我(7d≥2h) → 化境(3d≥3h) | 单段连续学习 |
-| 🐴 逆袭 | 黑马(6h+) → 绝地(8h+) | 前一天少+今天多 |
-| 💥 单科暴击 | 物理/数学/英语暴击 | 单科单日 ≥ 4h |
-| ⚖️ 均衡日 | 稳行者 | 三科都达标且不超额 |
-| 🌗 朝暮行 | 朝暮行 | 同一天晨行+夜航 |
-| 🎁 隐藏 | 狂热者×3 / 大满贯 / 三连绝世 | 触发后显示 |
+- Fullscreen focus desktop covers all displays; taskbar hidden; whitelisted apps remain usable
+- Window-level locking: only windows whose title matches the configured keyword are allowed (e.g. only the video titled "Physics Lecture")
+- Non-matching video windows are closed automatically (graceful WM_CLOSE first, forced kill as fallback); the main UI gets a 30-second grace period
+- Escape hatches: end/exit button, Esc, and a Ctrl+Shift+F10 global hotkey
+- Session persistence: quitting cleanly restores the lock screen; crash recovery cleans up automatically and restores the taskbar
 
-### 时间轴合并规则
+### Makeup & Surplus (💰)
+
+- Whenever a subject's daily total exceeds its target, the surplus enters that subject's pool (accumulated across all dates)
+- The fill range is configurable: all dates / current month / last 7 days (Settings; affects only which gaps can be filled)
+- Manual makeup: click a heatmap cell → fill per subject in the dialog; filled cells show a dot and the tooltip reveals the source date
+- The surplus layer never modifies the raw stats; the gold glow at the end of a progress bar shows today's surplus for that subject
+
+### Achievement system (38 total)
+
+| Group | Achievements | Dimension |
+|-------|--------------|-----------|
+| 🌱 Cumulative | Sprout(30h) → Branch(100h) → Tree(250h) | total study time |
+| 🔥 Streak | 3-day → 7-day → 14-day | consecutive days |
+| ⚡ Physics / 📐 Math / 📖 English | Novice → Halfway → Master | per-subject totals |
+| 🌊 Single-day burst | Mountain(6h) → Summit(8h) | single-day total |
+| 🌄 Morning lark | Dawn(5d) → Sunrise(10d) → Habit(18d) | first study before 07:00 |
+| 🌙 Night owl | Lamp(5d) → Candle(10d) → Stars(18d) | last study after 22:00 |
+| 🎯 Deep focus | Focused(3d≥2h) → Absorbed(7d≥2h) → Trance(3d≥3h) | longest continuous session |
+| 🐴 Comeback | Dark horse(6h+) → Last stand(8h+) | low day followed by big day |
+| 💥 Subject crit | Physics/Math/English crit | single subject ≥ 4h in a day |
+| ⚖️ Balanced day | Steady walker | all three met without exceeding |
+| 🌗 Dawn-dusk | Dawn-dusk | morning + night on the same day |
+| 🎁 Hidden | Fanatic ×3 / Grand slam / Triple streak | revealed after unlock |
+
+### Timeline merging rules
 
 ```
-① 同类相邻：同一科目 + 间隔 < 2min → 合并为一段
-② 噪音过滤：持续时间 < 30s → 丢弃
-③ 间隙保留：两段学习之间 > 5min → 显示为空白
-④ 穿插暂存：学习段中的短暂非学习（<5min）→ 折叠，点击展开可见
+① Adjacent merge: same subject + gap < 2min → merge into one segment
+② Noise filter:   duration < 30s → drop
+③ Gap keeping:    > 5min between study segments → show as blank
+④ Interleave:     brief non-study (< 5min) inside a study block → folded, expandable
 ```
 
-## 🛠 技术栈
+## 🛠 Tech Stack
 
-- **框架**: Electron 43 + React 19 + TypeScript
-- **构建**: Vite + electron-vite
-- **样式**: TailwindCSS 4
-- **图表**: Recharts
-- **存储**: SQLite（sql.js）
-- **数据源**: ActivityWatch REST API（`localhost:5600`）
-- **打包**: electron-builder（portable）
+- **Framework**: Electron 43 + React 19 + TypeScript
+- **Build**: Vite + electron-vite
+- **Styling**: TailwindCSS 4
+- **Charts**: Recharts
+- **Storage**: SQLite (sql.js)
+- **Data source**: ActivityWatch REST API (`localhost:5600`)
+- **Packaging**: electron-builder (portable)
 
-## 📖 详细架构
+## 📖 Detailed Architecture
 
-完整的项目架构、数据流、合并算法、数据库设计、排查指南见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full architecture, data flow, merging algorithm, database design, and troubleshooting guide.
 
-## 📄 许可证
+## 📄 License
 
 [MIT](LICENSE)

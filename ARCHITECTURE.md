@@ -1,6 +1,6 @@
 # 澜山 — 项目架构说明
 
-> 版本：0.1.0 | 最后更新：2026-07-11
+> 版本：0.3.0 | 最后更新：2026-08-07
 
 ---
 
@@ -28,7 +28,11 @@
 │   │   ├── sync.ts            # 同步引擎：AW 拉取 → 分类 → 合并 → 存储
 │   │   ├── classifier.ts      # 分类器：根据规则判定科目
 │   │   ├── activitywatch.ts   # AW HTTP 客户端：fetchEvents、bucket 发现
-│   │   └── tray.ts            # 系统托盘：图标、科目切换菜单
+│   │   ├── tray.ts            # 系统托盘：图标、科目切换菜单
+│   │   ├── makeup.ts          # 补签/盈余引擎（纯函数分配算法）
+│   │   ├── focus.ts           # 专注模式：锁屏、窗口级锁定、白名单
+│   │   ├── overlay.ts         # 专注覆盖层窗口管理（置顶/抬升）
+│   │   └── ps.ts              # PowerShell 辅助（任务栏隐藏/恢复等）
 │   │
 │   ├── preload/
 │   │   └── index.ts           # contextBridge：暴露 lanshan API 给渲染进程
@@ -41,8 +45,10 @@
 │       ├── utils.ts           # 格式化、图标映射
 │       ├── pages/
 │       │   ├── Dashboard.tsx  # 主仪表盘：科目卡片、环形图、时间轴
-│       │   ├── Settings.tsx   # 设置页：分类规则、常规设置
+│       │   ├── Settings.tsx   # 设置页：分类规则、补签范围、盈余统计
 │       │   ├── Achievements.tsx # 成就页
+│       │   ├── Focus.tsx      # 专注模式页：白名单管理、开始/结束
+│       │   ├── FocusOverlay.tsx # 专注覆盖层 UI（全屏倒计时）
 │       │   └── Heatmap.tsx    # 年度热力图
 │       └── components/
 │           ├── Timeline.tsx         # 时间轴：缩放、拆分、合并、重分类
@@ -145,6 +151,19 @@ classification_rules  用户自定义的分类规则
 
 achievements        成就系统
 settings            键值对设置
+
+makeup_fills        补签记录（手动补签持久化）
+├── id              INTEGER PRIMARY KEY
+├── date            TEXT            ← 被补的那天 (YYYY-MM-DD)
+├── subject         TEXT            ← 科目（物理/数学/英语）
+├── amount          INTEGER         ← 补签秒数
+├── source_date     TEXT            ← 盈余来源日（展示用，实际消耗按 FIFO）
+├── manual          INTEGER         ← 1=手动补签
+└── created_at      TEXT
+
+makeup_undone       用户标记"保持空白"的日期（撤销补签后防自动回填）
+├── date            TEXT
+└── subject         TEXT            ← PRIMARY KEY(date, subject)
 ```
 
 ### 4.2 数据量级
@@ -395,6 +414,20 @@ merged_segments 的 duration 仅用于 Timeline 可视化。
 
 > **关键原则**：所有 daily_stats 重建都必须从 `raw_events` SUM，绝不从 `merged_segments` 取数。
 
+### 9.3 补签与专注
+
+| API | 行为 |
+|---|---|
+| `getMakeupFills(year, month)` | 查询某月补签记录（热力图圆点 / tooltip） |
+| `getMakeupAvailability(date)` | 查询某日补签可行性（缺口 / 统一池余额 / 范围资格） |
+| `applyMakeup(date, subject)` | 手动补签（校验补签范围 + 盈余池余额） |
+| `undoMakeup(date, subject)` | 撤销补签并标记保持空白 |
+| `getFocusState()` | 专注模式状态（倒计时 / 白名单） |
+| `startFocus(durationMin)` / `stopFocus()` | 开始 / 结束专注 |
+| `setFocusWhitelist(entries)` | 保存白名单（进程 / 标题关键词） |
+| `getRunningApps()` / `launchFocusApp(name)` | 运行进程探测 / 启动白名单客户端 |
+| `focus-tick` (event) | 主进程每秒推送倒计时 |
+
 ---
 
 ## 10. UI 组件数据流
@@ -469,9 +502,67 @@ Dashboard
 
 ---
 
-## 12. 常见 Bug 排查指南
+## 12. 补签与盈余引擎（makeup.ts + database.ts）
 
-### 12.1 "科目时长不对"
+设计初衷（防"破罐破摔"）：热力图格子空白会让人产生"既然断了，后面也没必要坚持"的心理。盈余系统让空白从"永久的疤痕"变成"可修复的欠账"——欠账用真实学过的超额时长来还。
+
+### 12.1 核心规则
+
+```
+盈余产生：  某天某科 total > target → 差额进入该科盈余池（所有日期累加）
+统一池：    每科一个池，以"今天"为锚点计算 → 任何日期看到的可用盈余都是同一笔余额
+补签范围：  makeup_scope 设置（all=所有日期 / month=当月 / week=近7天）
+            只决定哪些日期的空缺可补，不影响盈余统计
+手动补签：  点热力图格子 → 弹窗内按科目补签（无自动补签）
+FIFO 消耗： 补签按盈余产生时间先进先出，tooltip 显示来源日
+撤销：      undoMakeup 删除补签并写 makeup_undone（防恢复）
+```
+
+### 12.2 算法（simulateMakeups，纯函数）
+
+- 从该科目最早数据日走到今天，逐日：推入当日盈余 → 强制消耗已有补签 → 生成新补签（手动模式下 generateNew=false，只查可用量）
+- `grossAfter`：截至当日的累计盈余（只增不减，Dashboard/设置页统计用）
+- `balanceAfter`：扣除补签后的可用余额
+- `fillFrom`：补签范围起始日（MAKEUP_FILL_ALL 哨兵 = 所有日期）
+- 关键常量：`MAKEUP_WINDOW_DAYS=7`（补签窗口默认）、`MAKEUP_VALID_DAYS=7`、`MAKEUP_FILL_ALL='0000-01-01'`
+
+### 12.3 前端呈现
+
+- 热力图：补过的格子右下角金色圆点；tooltip 显示「✚ 补签 X（来源 YYYY-MM-DD · 手动）」
+- Dashboard 卡片：当天该科有盈余时进度条末尾渐变金光 + 「✨ 今日盈余 +X」
+- 设置页：📝 补签范围三档切换 + 💰 盈余统计（每科累计/可用）
+
+### 12.4 测试脚本
+
+`scripts/makeup-test.ts`（13 个算法用例）、`scripts/makeup-db-test.ts`（SQL 层）、`scripts/makeup-seed-test.ts`（真实库注入演示数据，`--clean` 还原）。
+
+---
+
+## 13. 专注模式（focus.ts + overlay.ts + ps.ts）
+
+全屏专注桌面：学习期间锁定环境，只放行白名单软件。
+
+```
+启动专注 ──► 创建全屏覆盖层（所有显示器，任务栏隐藏）
+              │
+              ├─ 白名单软件：可正常使用（不匹配窗口自动关闭）
+              │    窗口级锁定：titleMatch 只放行标题匹配的窗口（如「高考物理」）
+              ├─ 主界面：固定 30 秒宽限期
+              ├─ 逃生机制：右下角结束按钮 / Esc / Ctrl+Shift+F10
+              └─ 会话持久化：正常退出恢复锁屏；崩溃重启自动清理现场
+```
+
+- `focus.ts`：状态机、白名单（FocusApp[]）、窗口扫描/关闭（WM_CLOSE 优先、强杀兜底）、全局快捷键、会话持久化
+- `overlay.ts`：覆盖层 BrowserWindow 管理（置顶、抬升白名单窗口、还原）
+- `ps.ts`：PowerShell 辅助脚本（任务栏隐藏/显示、Alt 键解锁、UTF-8 输出）
+- 渲染层：`Focus.tsx`（白名单管理/开始结束）、`FocusOverlay.tsx`（全屏倒计时 UI）
+- 测试：`scripts/focus-seed-test.ts`
+
+---
+
+## 14. 常见 Bug 排查指南
+
+### 14.1 "科目时长不对"
 
 **检查顺序**：
 
@@ -482,24 +573,24 @@ Dashboard
    - `raw_events` 正确但 `daily_stats` 错误 → 某处用了 merged_segments 重建 daily_stats
    - `raw_events` 本身错误 → 分类规则问题
 
-### 12.2 "历史日期没数据/数据不全"
+### 14.2 "历史日期没数据/数据不全"
 
 确认 `Dashboard.loadData()` 中对非今天的日期调用了 `rebuildDailyStats(selectedDate)`。
 
-### 12.3 "时间轴上看到段但时长显示不对"
+### 14.3 "时间轴上看到段但时长显示不对"
 
 - 检查 `merged_segments.duration` 是否等于段内所有 constituent 之和
 - 如果段的 start/end 跨度正确但 duration 偏小 → 检查是否有 duration 重算逻辑错误
 - 如果短科目段"消失"了 → 可能被吸收到相邻段（这是正常的），检查被吸收段的 constituent 仍保留在吸收段里
 
-### 12.4 "分类规则不生效"
+### 14.4 "分类规则不生效"
 
 1. 确认规则优先级（priority）是否正确
 2. 确认 `match_field` 设置（title/app/url/all）
 3. 添加规则后会自动调用 `reclassifyRawEventsByKeyword` 重分类现有数据
 4. 如果规则匹配两种不同科目 → 优先级高的生效
 
-### 12.5 "热力图详情页时长与 AW 不一致"
+### 14.5 "热力图详情页时长与 AW 不一致"
 
 1. 终端日志对比 `DIAG AW raw per-title` 和 `DIAG per-title raw_events totals`
    - 两者一致 → raw_events 数据正确，差异来自 AW 自身 UI 的 AFK 过滤或聚合方式不同
