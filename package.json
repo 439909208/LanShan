@@ -1,6 +1,6 @@
 {
   "name": "lanshan",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "澜山 — 学习时长统计工具",
   "main": "./out/main/index.js",
   "author": "",
