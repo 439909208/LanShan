@@ -6,7 +6,7 @@ import { getSealDefs, getSealsOverview, getDailySealRecords, getNewSeals, setSea
 import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments, rebuildMergedSegmentsInRange } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
-import { initFocus, shutdownFocus, setFocusHooks, startFocusSession, stopFocusSession, getFocusState, setFocusWhitelist, getFocusHidden, setFocusHidden, getFocusOrder, setFocusOrder, getFocusColor, setFocusColor, getRunningApps, resolveAppPath, getAppIcon, getWindowUrl, launchFocusApp, restoreTaskbarNow, FocusApp } from './focus'
+import { initFocus, shutdownFocus, setFocusHooks, startFocusSession, stopFocusSession, getFocusState, getBackgroundApps, killFocusApp, restartFocusApp, setFocusWhitelist, getFocusHidden, setFocusHidden, getFocusOrder, setFocusOrder, getFocusColor, setFocusColor, getRunningApps, resolveAppPath, getAppIcon, getWindowUrl, launchFocusApp, restoreTaskbarNow, FocusApp } from './focus'
 import { initSchedule, stopSchedule, isScheduleLocked } from './schedule'
 
 // 全局异常兜底：任何未捕获异常/未处理拒绝都不让主进程直接崩溃（曾导致专注中闪退、任务栏残留）
@@ -246,6 +246,7 @@ function registerIpcHandlers(): void {
 
   // Focus mode (专注模式)
   ipcMain.handle('get-focus-state', () => getFocusState())
+  ipcMain.handle('get-background-apps', () => getBackgroundApps())
   ipcMain.handle('start-focus', (_event, durationMin: number) => startFocusSession(durationMin))
   ipcMain.handle('stop-focus', () => {
     // 严格模式学习时段内锁定：拒绝提前结束专注（时段结束自动解锁）
@@ -273,6 +274,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-app-icon', (_event, name: string, path: string) => getAppIcon(name, path))
   ipcMain.handle('get-window-url', (_event, app: FocusApp) => getWindowUrl(app))
   ipcMain.handle('launch-focus-app', (_event, name: string, titleMatch?: string) => launchFocusApp(name, titleMatch))
+  ipcMain.handle('kill-focus-app', (_event, name: string) => killFocusApp(name))
+  ipcMain.handle('restart-focus-app', (_event, name: string, titleMatch?: string) => restartFocusApp(name, titleMatch))
   ipcMain.handle('quit-app', async () => {
     // 严格模式学习时段内锁定：禁止退出应用（退出会绕过专注锁定）
     if (isScheduleLocked()) {

@@ -75,6 +75,8 @@ const api = {
 
   // Focus mode (专注模式)
   getFocusState: (): Promise<FocusState> => ipcRenderer.invoke('get-focus-state'),
+  /** 任务栏最小化程序列表：白名单中窗口最小化在任务栏的程序（点启动栏可直接弹回） */
+  getBackgroundApps: (): Promise<FocusApp[]> => ipcRenderer.invoke('get-background-apps'),
   startFocus: (durationMin: number): Promise<boolean> => ipcRenderer.invoke('start-focus', durationMin),
   stopFocus: (): Promise<void> => ipcRenderer.invoke('stop-focus'),
   setFocusWhitelist: (entries: FocusApp[]): Promise<void> => ipcRenderer.invoke('set-focus-whitelist', entries),
@@ -89,6 +91,10 @@ const api = {
   getAppIcon: (name: string, path: string): Promise<string> => ipcRenderer.invoke('get-app-icon', name, path),
   getWindowUrl: (app: FocusApp): Promise<string> => ipcRenderer.invoke('get-window-url', app),
   launchFocusApp: (name: string, titleMatch?: string): Promise<void> => ipcRenderer.invoke('launch-focus-app', name, titleMatch),
+  /** 杀死白名单软件的进程（强制结束后台）；澜山自身会被主进程拒绝 */
+  killFocusApp: (name: string): Promise<void> => ipcRenderer.invoke('kill-focus-app', name),
+  /** 强制重启白名单软件（杀进程后重新启动） */
+  restartFocusApp: (name: string, titleMatch?: string): Promise<void> => ipcRenderer.invoke('restart-focus-app', name, titleMatch),
   quitApp: (): Promise<void> => ipcRenderer.invoke('quit-app'),
   onFocusTick: (cb: (data: FocusTick) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, data: FocusTick) => cb(data)

@@ -21,3 +21,7 @@ _stub/
 _test_*.bat
 enc_test.log
 pipe_test.log
+
+# 打包产物输出目录（release/ 之外的历史/临时输出）
+release-*/
+pack-log.txt

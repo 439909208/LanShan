@@ -16,7 +16,7 @@
     "appId": "com.lanshan.app",
     "productName": "澜山",
     "directories": { "output": "release" },
-    "win": { "target": "portable" },
+    "win": { "target": "portable", "icon": "resources/icon.png" },
     "files": ["out/**/*", "resources/**/*"]
   },
   "dependencies": {

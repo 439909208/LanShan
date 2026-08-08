@@ -309,6 +309,14 @@ export default function FocusOverlay(): React.ReactElement {
   // 氛围色（诗词/扫描光带，可自定义）
   const [poemColor, setPoemColor] = useState('#ecfdf5')
   const [colorOpen, setColorOpen] = useState(false)
+  // 任务栏最小化面板：白名单中窗口最小化在任务栏的程序（点启动栏可直接弹回）
+  const [bgOpen, setBgOpen] = useState(false)
+  const [bgApps, setBgApps] = useState<FocusApp[]>([])
+
+  /** 手动刷新最小化列表（面板打开时查询一次，之后由用户点刷新按钮更新） */
+  const refreshBgApps = (): void => {
+    window.lanshan.getBackgroundApps().then(setBgApps).catch(() => setBgApps([]))
+  }
 
   // ── v2 新功能状态 ──
   const [controlOpen, setControlOpen] = useState(false)
@@ -336,10 +344,10 @@ export default function FocusOverlay(): React.ReactElement {
   useEffect(() => {
     window.lanshan.getFocusState().then((s) => {
       setState(s)
-      // 预取白名单软件的真实图标
+      // 预取白名单软件的真实图标（澜山自身无 path，主进程会用当前 exe 提取）
       s.whitelist.forEach(a => {
-        if (a.path) {
-          window.lanshan.getAppIcon(a.name, a.path).then((url) => {
+        if (a.path || ['electron', 'electron.exe', '澜山.exe'].includes(a.name.toLowerCase())) {
+          window.lanshan.getAppIcon(a.name, a.path || '').then((url) => {
             if (url) setIcons(prev => ({ ...prev, [a.name.toLowerCase()]: url }))
           })
         }
@@ -528,13 +536,25 @@ export default function FocusOverlay(): React.ReactElement {
     await window.lanshan.launchFocusApp(a.name, a.titleMatch)
   }
 
+  /** 杀死软件的后台进程（强制结束后台，需确认） */
+  async function killApp(a: FocusApp): Promise<void> {
+    if (!confirm(`确定杀死 ${tileLabel(a)} 的进程吗？未保存的数据（如网盘传输）会丢失。`)) return
+    await window.lanshan.killFocusApp(a.name)
+  }
+
+  /** 强制重启软件（先杀进程再重新启动，需确认） */
+  async function restartApp(a: FocusApp): Promise<void> {
+    if (!confirm(`确定强制重启 ${tileLabel(a)} 吗？将先结束其进程，再重新启动。`)) return
+    await window.lanshan.restartFocusApp(a.name, a.titleMatch)
+  }
+
   /** 更新白名单：同步主进程 + 本地状态 + 新条目预取图标 */
   function updateWhitelist(next: FocusApp[]): void {
     window.lanshan.setFocusWhitelist(next)
     setState(prev => prev ? { ...prev, whitelist: next } : prev)
     for (const a of next) {
-      if (a.path) {
-        window.lanshan.getAppIcon(a.name, a.path).then((url) => {
+      if (a.path || ['electron', 'electron.exe', '澜山.exe'].includes(a.name.toLowerCase())) {
+        window.lanshan.getAppIcon(a.name, a.path || '').then((url) => {
           if (url) setIcons(prev => ({ ...prev, [a.name.toLowerCase()]: url }))
         })
       }
@@ -743,6 +763,18 @@ export default function FocusOverlay(): React.ReactElement {
             ⚙️
           </button>
           <button
+            onClick={() => {
+              const next = !bgOpen
+              setBgOpen(next)
+              if (next) refreshBgApps()
+            }}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all border hover:bg-white/10"
+            style={{ borderColor: bgOpen ? 'rgba(52,211,153,0.5)' : 'rgba(255,255,255,0.12)', background: bgOpen ? 'rgba(52,211,153,0.12)' : 'transparent' }}
+            title="任务栏最小化的程序（点启动栏可直接弹回）"
+          >
+            🪟
+          </button>
+          <button
             onClick={() => setColorOpen(v => !v)}
             className="w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all border hover:bg-white/10"
             style={{ borderColor: 'rgba(255,255,255,0.12)' }}
@@ -797,7 +829,7 @@ export default function FocusOverlay(): React.ReactElement {
 
           {/* 右栏：软件启动器（白名单图标，可拖拽排序） */}
           <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-            <HudPanel label="LAUNCHER · 软件启动器" right={`${whitelist.length} APPS`} className="flex-1 min-h-0 flex flex-col">
+            <HudPanel label="LAUNCHER · 软件启动器" right={`${whitelist.length} APPS`} glow={glowOn} className="flex-1 min-h-0 flex flex-col">
               <div className="flex-1 min-h-0 overflow-y-auto hud-scroll pr-1.5">
                 {orderedWhitelist.length === 0 ? (
                   <div className="h-full flex items-center justify-center">
@@ -809,6 +841,8 @@ export default function FocusOverlay(): React.ReactElement {
                     <div className="flex flex-wrap justify-start gap-4">
                     {orderedWhitelist.map(a => {
                       const key = focusEntryKey(a)
+                      // 澜山自身不提供杀进程/重启（主进程也会拒绝）
+                      const isSelf = ['electron', 'electron.exe', '澜山.exe'].includes(a.name.toLowerCase())
                       return (
                         <AppTile
                           key={key}
@@ -816,6 +850,8 @@ export default function FocusOverlay(): React.ReactElement {
                           icon={icons[a.name.toLowerCase()]}
                           pulsing={tilePulse === key}
                           onLaunch={() => launch(a)}
+                          onKill={isSelf ? undefined : () => killApp(a)}
+                          onRestart={isSelf ? undefined : () => restartApp(a)}
                           onRemove={() => hideEntry(a)}
                           draggable
                           isDragging={dragKey === key}
@@ -906,6 +942,67 @@ export default function FocusOverlay(): React.ReactElement {
         </div>
       )}
 
+      {/* 任务栏最小化面板：最小化在任务栏的程序（手动刷新） */}
+      {bgOpen && (
+        <div
+          className="fixed right-10 top-20 w-[300px] rounded-xl p-4 z-[100]"
+          style={{
+            background: 'rgba(4,18,14,0.94)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            backdropFilter: 'blur(14px)',
+            boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+          }}
+        >
+          <HudCorners />
+          <div className="flex items-center justify-between mb-2">
+            <span className="mono text-[11px] font-semibold tracking-[0.2em]" style={{ color: 'rgba(110,231,183,0.9)' }}>
+              🪟 任务栏最小化
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={refreshBgApps}
+                className="w-6 h-6 rounded-full flex items-center justify-center text-xs transition-all hover:bg-white/10"
+                title="手动刷新"
+                style={{ color: 'rgba(236,253,245,0.7)' }}
+              >
+                🔄
+              </button>
+              <button
+                onClick={() => setBgOpen(false)}
+                className="w-6 h-6 rounded-full flex items-center justify-center text-xs transition-all hover:bg-white/10"
+                style={{ color: 'rgba(236,253,245,0.6)' }}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          <p className="mono text-[10px] leading-relaxed tracking-wider mb-3" style={{ color: 'rgba(236,253,245,0.45)' }}>
+            这些程序最小化在任务栏，点启动栏图标可直接弹回。
+          </p>
+          <div className="space-y-1.5">
+            {bgApps.length === 0 ? (
+              <p className="text-xs py-2 text-center" style={{ color: 'rgba(236,253,245,0.45)' }}>
+                ✓ 没有最小化的程序
+              </p>
+            ) : bgApps.map(a => (
+              <div
+                key={focusEntryKey(a)}
+                className="flex items-center gap-2 px-3 py-2 rounded-xl"
+                style={{ background: 'rgba(255,255,255,0.05)' }}
+              >
+                <span className="text-base">🗕</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm truncate" style={{ color: 'rgba(236,253,245,0.9)' }}>{tileLabel(a)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mono text-[10px] leading-relaxed tracking-wider mt-3" style={{ color: 'rgba(110,231,183,0.55)' }}>
+            💡 关闭程序请用「最小化」；点了 ✕ 的程序点启动栏会自动重启
+          </p>
+        </div>
+      )}
+
       {/* 控制中心：环境音 / 休息提醒 / 音效 / 语录 */}
       {controlOpen && (
         <div
@@ -985,10 +1082,11 @@ export default function FocusOverlay(): React.ReactElement {
               <span className="text-xs" style={{ color: 'rgba(236,253,245,0.75)' }}>🖱 鼠标光效</span>
               <button
                 onClick={() => {
-                  setGlowOn(v => {
-                    window.lanshan.setSetting('focus_glow', !v ? 1 : 0)
-                    return !v
-                  })
+                  // 副作用不能写在 setState updater 里（React 19 下可能被重放多次）：
+                  // 先算好新值，再更新状态 + 持久化
+                  const next = !glowOn
+                  setGlowOn(next)
+                  window.lanshan.setSetting('focus_glow', next ? 1 : 0)
                 }}
                 className={`cyber-toggle ${glowOn ? 'on' : ''}`}
                 title="面板上跟随鼠标的光晕"
@@ -998,10 +1096,9 @@ export default function FocusOverlay(): React.ReactElement {
               <span className="text-xs" style={{ color: 'rgba(236,253,245,0.75)' }}>🔔 提示音效</span>
               <button
                 onClick={() => {
-                  setSfxOn(v => {
-                    window.lanshan.setSetting('focus_sfx', !v ? 1 : 0)
-                    return !v
-                  })
+                  const next = !sfxOn
+                  setSfxOn(next)
+                  window.lanshan.setSetting('focus_sfx', next ? 1 : 0)
                 }}
                 className={`cyber-toggle ${sfxOn ? 'on' : ''}`}
                 title="提醒/完成提示音"
@@ -1011,10 +1108,9 @@ export default function FocusOverlay(): React.ReactElement {
               <span className="text-xs" style={{ color: 'rgba(236,253,245,0.75)' }}>✨ 激励语录</span>
               <button
                 onClick={() => {
-                  setQuoteOn(v => {
-                    window.lanshan.setSetting('focus_quote', !v ? 1 : 0)
-                    return !v
-                  })
+                  const next = !quoteOn
+                  setQuoteOn(next)
+                  window.lanshan.setSetting('focus_quote', next ? 1 : 0)
                 }}
                 className={`cyber-toggle ${quoteOn ? 'on' : ''}`}
                 title="左下角语录轮换"
@@ -1375,12 +1471,15 @@ function WeekBars({ week }: { week: WeekDay[] | null }): React.ReactElement {
   )
 }
 
-/** 科技风软件图标卡片：正方形方框 + 顶部亮线 + hover 上浮发光 + 点击涟漪（正圆）+ 悬停删除 + 拖拽排序 */
-function AppTile({ label, icon, pulsing, onLaunch, onRemove, draggable, isDragging, isDragOver, onDragStart, onDragOver, onDrop, onDragEnd }: {
+/** 科技风软件图标卡片：正方形方框 + 顶部亮线 + hover 上浮发光 + 点击涟漪（正圆）+ 悬停删除 + 拖拽排序。
+ *  右键图标弹出操作菜单：🔄 强制重启 / ⏹ 删除后台（澜山自身不显示） */
+function AppTile({ label, icon, pulsing, onLaunch, onKill, onRestart, onRemove, draggable, isDragging, isDragOver, onDragStart, onDragOver, onDrop, onDragEnd }: {
   label: string
   icon?: string
   pulsing?: boolean
   onLaunch: () => void
+  onKill?: () => void
+  onRestart?: () => void
   onRemove: () => void
   draggable?: boolean
   isDragging?: boolean
@@ -1390,6 +1489,8 @@ function AppTile({ label, icon, pulsing, onLaunch, onRemove, draggable, isDraggi
   onDrop?: (e: React.DragEvent) => void
   onDragEnd?: () => void
 }): React.ReactElement {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const hasOps = !!(onKill || onRestart)
   return (
     <div className="relative group">
       <button
@@ -1399,6 +1500,10 @@ function AppTile({ label, icon, pulsing, onLaunch, onRemove, draggable, isDraggi
         onDrop={onDrop}
         onDragEnd={onDragEnd}
         onClick={onLaunch}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          if (hasOps) setMenuOpen(v => !v)
+        }}
         title={label}
         className="relative w-[clamp(112px,6vw,168px)] h-[clamp(112px,6vw,168px)] flex flex-col items-center justify-center gap-1.5 rounded-xl select-none transition-all duration-200 hover:-translate-y-1.5 hover:bg-white/10 hover:shadow-[0_10px_32px_rgba(16,185,129,0.28)] active:scale-95"
         style={{
@@ -1437,6 +1542,47 @@ function AppTile({ label, icon, pulsing, onLaunch, onRemove, draggable, isDraggi
           {label}
         </span>
       </button>
+      {/* 右键菜单：强制重启 / 删除后台 */}
+      {menuOpen && (
+        <>
+          {/* 点击空白处关闭菜单 */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setMenuOpen(false)}
+            onContextMenu={(e) => { e.preventDefault(); setMenuOpen(false) }}
+          />
+          <div
+            className="absolute right-0 top-full mt-2 z-50 rounded-xl overflow-hidden min-w-[150px]"
+            style={{
+              background: 'rgba(4,18,14,0.96)',
+              border: '1px solid rgba(255,255,255,0.12)',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
+              backdropFilter: 'blur(14px)',
+            }}
+          >
+            {onRestart && (
+              <button
+                onClick={() => { setMenuOpen(false); onRestart() }}
+                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-left transition-colors hover:bg-white/10"
+                style={{ color: 'rgba(236,253,245,0.9)' }}
+              >
+                <span className="text-sm">🔄</span>
+                <span className="flex-1">强制重启</span>
+              </button>
+            )}
+            {onKill && (
+              <button
+                onClick={() => { setMenuOpen(false); onKill() }}
+                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-left transition-colors hover:bg-white/10"
+                style={{ color: '#fca5a5' }}
+              >
+                <span className="text-sm">⏹</span>
+                <span className="flex-1">删除后台</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
       {/* 悬停显示删除按钮 */}
       <button
         onClick={onRemove}

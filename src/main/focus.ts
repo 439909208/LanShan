@@ -160,35 +160,35 @@ while($true){
   Start-Sleep -Milliseconds 500
 }`
 
-/** 查询某进程的全部可见窗口：hwndhex|pid|标题 每行一个 */
-async function getProcessWindows(procName: string): Promise<{ hwndHex: string; pid: number; title: string }[]> {  const script = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public static class EW{[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr l);[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);}'
-$pids=@(Get-Process -Name '${procName}' -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-if($pids.Count -gt 0){
-  $cb=[EW+EnumWindowsProc]{param($h,$l)
-    $p=0
-    [void][EW]::GetWindowThreadProcessId($h,[ref]$p)
-    if($pids -contains $p -and [EW]::IsWindowVisible($h)){
-      $sb=New-Object System.Text.StringBuilder 512
-      [void][EW]::GetWindowText($h,$sb,512)
-      if($sb.Length -gt 0){
-        [Console]::Out.WriteLine(('{0:X}|{1}|{2}' -f $h.ToInt64(),$p,$sb.ToString()))
-      }
-    }
-    return $true
-  }
-  [void][EW]::EnumWindows($cb,[IntPtr]::Zero)
-}`
+/** 查询某进程的全部可见窗口：hwndhex|pid|是否最小化|宽|高|标题 每行一个。
+ *  枚举用 C# 原生委托实现——PS 5.1 的 scriptblock 委托对 EnumWindows 回调不生效
+ *  （回调永远不被调用，枚举恒为空，曾导致"有窗口却判定无窗口"→ 误 spawn 双实例黑屏）。
+ *  最小化窗口（IsIconic）尺寸会变成任务栏图标大小（如 158x26），必须放行——
+ *  否则最小化在任务栏的程序会被误判"无窗口"→ 被杀掉重启（用户反馈"每次点都强制重启"）。
+ *  仅过滤正常状态下宽高比极端的辅助窗口（桌面歌词/迷你条等，宽高比 >3:1 或 <1:3）。 */
+interface ProcWin { hwndHex: string; pid: number; minimized: boolean; width: number; height: number; title: string }
+
+async function getProcessWindows(procName: string): Promise<ProcWin[]> {
+  const esc = procName.replace(/'/g, "''")
+  const script = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public static class GW{[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr l);[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);[StructLayout(LayoutKind.Sequential)]public struct RECT{public int L,T,Rt,B;}public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);public static string List(string procName){var pids=new System.Collections.Generic.HashSet<uint>();foreach(var p in System.Diagnostics.Process.GetProcessesByName(procName)){pids.Add((uint)p.Id);}if(pids.Count==0)return "";var sb=new StringBuilder();EnumWindows(delegate(IntPtr h,IntPtr l){uint pid;GetWindowThreadProcessId(h,out pid);if(pids.Contains(pid)&&IsWindowVisible(h)){var t=new StringBuilder(512);GetWindowText(h,t,512);if(t.Length>0){RECT r;GetWindowRect(h,out r);sb.Append(h.ToInt64().ToString("X")).Append("|").Append(pid).Append("|").Append(IsIconic(h)?"MIN":"NORM").Append("|").Append(r.Rt-r.L).Append("|").Append(r.B-r.T).Append("|").AppendLine(t.ToString());}}return true;},IntPtr.Zero);return sb.ToString();}}'
+[GW]::List('${esc}')`
   const out = await runPS(script)
-  const wins: { hwndHex: string; pid: number; title: string }[] = []
+  const wins: ProcWin[] = []
   for (const line of out.split('\n')) {
-    const first = line.indexOf('|')
-    if (first <= 0) continue
-    const second = line.indexOf('|', first + 1)
-    if (second <= 0) continue
-    const hwndHex = line.slice(0, first)
-    const pid = parseInt(line.slice(first + 1, second), 10)
-    if (isNaN(pid)) continue
-    wins.push({ hwndHex, pid, title: line.slice(second + 1) })
+    const parts = line.split('|')
+    if (parts.length < 6) continue
+    const hwndHex = parts[0]
+    const pid = parseInt(parts[1], 10)
+    const minimized = parts[2] === 'MIN'
+    const width = parseInt(parts[3], 10)
+    const height = parseInt(parts[4], 10)
+    if (isNaN(pid) || isNaN(width) || isNaN(height)) continue
+    // 最小化窗口（任务栏状态）尺寸是图标大小，必须放行；只有正常窗口才做辅助窗口过滤
+    if (!minimized) {
+      if (width < 50 || height < 50) continue
+      if (width / height > 3 || height / width > 3) continue
+    }
+    wins.push({ hwndHex, pid, minimized, width, height, title: parts.slice(5).join('|').replace(/\r$/, '') })
   }
   return wins
 }
@@ -815,6 +815,36 @@ export function getFocusState(): FocusState {
   }
 }
 
+/** 专注桌面「任务栏最小化」按钮数据：白名单中「窗口最小化在任务栏」的程序。
+ *  这类程序点启动栏图标可直接弹回（ShowWindow 恢复），不需要重启。 */
+export async function getBackgroundApps(): Promise<FocusApp[]> {
+  const list = session.active ? session.whitelist : ensureDefaultWhitelist()
+  const seen = new Set<string>()
+  const result: FocusApp[] = []
+  for (const a of list) {
+    const key = a.name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const procName = key.replace(/\.exe$/, '').replace(/'/g, "''")
+    if (await hasMinimizedWindow(procName)) {
+      result.push(a)
+    }
+  }
+  return result
+}
+
+/** 进程是否存在最小化在任务栏的窗口（IsIconic）。
+ *  只统计最小化：正常显示的窗口不算。
+ *  注意：最小化窗口的 GetWindowRect 返回的是任务栏图标大小（如 158x26），不能按尺寸过滤，
+ *  只按"有标题"过滤（跳过 IME 等无标题辅助窗）。 */
+async function hasMinimizedWindow(procName: string): Promise<boolean> {
+  const esc = procName.replace(/'/g, "''")
+  const script = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public static class PS2{[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr l);[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);public static string List(string procName){var pids=new System.Collections.Generic.HashSet<uint>();foreach(var p in System.Diagnostics.Process.GetProcessesByName(procName)){pids.Add((uint)p.Id);}if(pids.Count==0)return "";var sb=new StringBuilder();EnumWindows(delegate(IntPtr h,IntPtr l){uint pid;GetWindowThreadProcessId(h,out pid);if(pids.Contains(pid)&&IsIconic(h)){var t=new StringBuilder(512);GetWindowText(h,t,512);if(t.Length>0){sb.AppendLine(t.ToString());}}return true;},IntPtr.Zero);return sb.ToString();}}'
+[PS2]::List('${esc}')`
+  const out = await runPS(script)
+  return out.trim().length > 0
+}
+
 /** 恢复任务栏与工作区（退出应用前等待完成，避免进程退出太快来不及恢复） */
 export async function restoreTaskbarNow(): Promise<void> {
   await runPS(TASKBAR_SHOW_SCRIPT)
@@ -841,28 +871,9 @@ export async function getRunningApps(): Promise<FocusApp[]> {
 }
 
 async function collectRunningApps(): Promise<FocusApp[]> {
-  const script = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public static class RA{[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr l);[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);}'
-$winMap=@{}
-$cb=[RA+EnumWindowsProc]{param($h,$l)
-  $p=0
-  [void][RA]::GetWindowThreadProcessId($h,[ref]$p)
-  if([RA]::IsWindowVisible($h)){
-    $sb=New-Object System.Text.StringBuilder 512
-    [void][RA]::GetWindowText($h,$sb,512)
-    if($sb.Length -gt 0){
-      if(-not $winMap.ContainsKey([int]$p)){ $winMap[[int]$p] = @() }
-      $winMap[[int]$p] += $sb.ToString()
-    }
-  }
-  return $true
-}
-[void][RA]::EnumWindows($cb,[IntPtr]::Zero)
-Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -ne 0 } | ForEach-Object {
-  $pn=$_.ProcessName
-  if($winMap.ContainsKey($_.Id)){
-    foreach($t in $winMap[$_.Id]){ [Console]::Out.WriteLine(("{0}|{1}|{2}" -f $pn, $_.Path, $t)) }
-  }
-}`
+  // C# 原生委托实现枚举（PS 5.1 scriptblock 委托对 EnumWindows 回调不生效，枚举恒为空）
+  const script = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public static class RA{[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr l);[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);public static string Run(){var winMap=new System.Collections.Generic.Dictionary<int,System.Collections.Generic.List<string>>();EnumWindows(delegate(IntPtr h,IntPtr l){uint pid;GetWindowThreadProcessId(h,out pid);if(IsWindowVisible(h)){var t=new StringBuilder(512);GetWindowText(h,t,512);if(t.Length>0){if(!winMap.ContainsKey((int)pid))winMap[(int)pid]=new System.Collections.Generic.List<string>();winMap[(int)pid].Add(t.ToString());}}return true;},IntPtr.Zero);var sb=new StringBuilder();foreach(var p in System.Diagnostics.Process.GetProcesses()){if(p.SessionId==0)continue;System.Collections.Generic.List<string> titles;if(winMap.TryGetValue(p.Id,out titles)){string path="";try{path=p.MainModule.FileName;}catch{}foreach(var t in titles){sb.Append(p.ProcessName).Append("|").Append(path).Append("|").AppendLine(t);}}}return sb.ToString();}}'
+[RA]::Run()`
   const out = await runPS(script)
   const apps: FocusApp[] = []
   for (const line of out.split('\n')) {
@@ -874,7 +885,7 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -ne 0 } 
     if (pathEnd <= 0) continue
     const name = line.slice(0, nameEnd).trim()
     const path = line.slice(nameEnd + 1, pathEnd).trim()
-    const title = line.slice(pathEnd + 1).trim()
+    const title = line.slice(pathEnd + 1).replace(/\r$/, '').trim()
     if (!name) continue
     apps.push({ name: name + '.exe', path: path || undefined, title: title || undefined })
   }
@@ -916,7 +927,16 @@ if($p -and $p.'(default)' -and (Test-Path -LiteralPath $p.'(default)')){[Console
  * 放大显示会模糊。提取失败回退到旧方法。
  */
 export async function getAppIcon(name: string, path: string): Promise<string> {
-  if (!path) return ''
+  // 澜山自身条目（无 path，如自动加入的 electron.exe/澜山.exe）：用当前 exe 提取图标
+  if (!path) {
+    const key = name.toLowerCase()
+    const selfBase = SELF_NAME.replace(/\.exe$/i, '')
+    if (key === SELF_NAME || key === selfBase || key === 'electron' || key === 'electron.exe') {
+      path = process.execPath
+    } else {
+      return ''
+    }
+  }
   const safeName = name.toLowerCase().replace(/[^a-z0-9._-]/g, '_')
   const cacheFile = join(ICON_DIR, safeName + '_256.png')
   if (existsSync(cacheFile)) return toDataUrl(cacheFile)
@@ -1013,52 +1033,81 @@ async function processExists(procName: string): Promise<boolean> {
   return parseInt(out.trim(), 10) > 0
 }
 
-/**
- * 恢复进程的所有隐藏/最小化窗口（托盘模式唤醒，无副作用不重启）。
- * 枚举该进程全部窗口（含不可见），ShowWindow(9) 恢复显示 + 强制重绘防黑屏。
- * 返回恢复的窗口句柄列表（hwndHex）。
- */
-async function restoreHiddenWindows(procName: string): Promise<string[]> {
+/** 强制结束进程（按进程名）——点击启动栏时"无可见窗口即杀进程重启"，保证窗口必然弹出 */
+async function killProcess(procName: string): Promise<void> {
   const esc = procName.replace(/'/g, "''")
-  const script = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public static class RW{[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr l);[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c);[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);[DllImport("user32.dll")] public static extern bool InvalidateRect(IntPtr h,IntPtr rect,bool bErase);[DllImport("user32.dll")] public static extern bool UpdateWindow(IntPtr h);[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);[StructLayout(LayoutKind.Sequential)]public struct RECT{public int L,T,Rt,B;}public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);}'
-$pids=@(Get-Process -Name '${esc}' -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-$script:out=@()
-if($pids.Count -gt 0){
-  $cb=[RW+EnumWindowsProc]{param($h,$l)
-    $p=0
-    [void][RW]::GetWindowThreadProcessId($h,[ref]$p)
-    if($pids -contains $p){
-      $sb=New-Object System.Text.StringBuilder 512
-      [void][RW]::GetWindowText($h,$sb,512)
-      if($sb.Length -gt 0){
-        # 只恢复正常大小的窗口（跳过 IME/工具小窗口），避免弹出无意义辅助窗口
-        $r=New-Object RW+RECT
-        [void][RW]::GetWindowRect($h,[ref]$r)
-        if(($r.Rt-$r.L) -ge 100 -and ($r.B-$r.T) -ge 100){
-          [void][RW]::ShowWindow($h,9)
-          # 强制重绘：防止恢复后黑屏（客户端未收到重绘事件时窗口内容为空）
-          [void][RW]::InvalidateRect($h,[IntPtr]::Zero,$true)
-          [void][RW]::UpdateWindow($h)
-          [void][RW]::SetForegroundWindow($h)
-          $script:out += ('{0:X}' -f $h.ToInt64())
-        }
-      }
-    }
-    return $true
-  }
-  [void][RW]::EnumWindows($cb,[IntPtr]::Zero)
+  await runPS(`Get-Process -Name '${esc}' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`)
 }
-[Console]::Out.WriteLine($script:out -join ',')`
-  const out = await runPS(script)
-  return out.split(',').map(s => s.trim()).filter(s => /^[0-9A-Fa-f]+$/.test(s))
-}
+
+/** 同一条目的启动在途锁：快速重复点击时复用同一次启动流程，
+ *  防止并发 spawn 双实例（用户反馈：黑屏卡死窗口 + 本体窗口并存） */
+const launching = new Map<string, Promise<void>>()
 
 /** 启动或切到前台一个白名单软件；澜山自身则打开主窗口。
  *  按用户逻辑：窗口级条目点击 = 确保进程存在 → 显示主界面窗口 + 固定 30 秒宽限。 */
-export async function launchFocusApp(name: string, titleMatch?: string): Promise<void> {
+export function launchFocusApp(name: string, titleMatch?: string): Promise<void> {
+  const lockKey = name.toLowerCase() + '|' + (titleMatch || '').toLowerCase()
+  const inFlight = launching.get(lockKey)
+  if (inFlight) return inFlight
+  const p = doLaunchFocusApp(name, titleMatch).finally(() => launching.delete(lockKey))
+  launching.set(lockKey, p)
+  return p
+}
+
+/** 是否是澜山自身（electron.exe / 澜山.exe / electron）——自身不允许被杀/重启 */
+function isSelfName(name: string): boolean {
   const key = name.toLowerCase()
   const selfBase = SELF_NAME.replace(/\.exe$/i, '')
-  if (key === SELF_NAME || key === selfBase) {
+  return key === SELF_NAME || key === selfBase || key === 'electron' || key === 'electron.exe'
+}
+
+/** 杀死白名单软件的进程（强制结束后台）。澜山自身拒绝执行（会把自己杀掉） */
+export async function killFocusApp(name: string): Promise<void> {
+  if (isSelfName(name)) return
+  const procName = name.toLowerCase().replace(/\.exe$/, '').replace(/'/g, "''")
+  console.log('[focus] 手动杀死进程:', name)
+  await killProcess(procName)
+}
+
+/** 强制重启白名单软件：杀进程 + 等退出 + 重新启动（保证弹出新窗口）。澜山自身拒绝执行 */
+export async function restartFocusApp(name: string, titleMatch?: string): Promise<void> {
+  if (isSelfName(name)) return
+  const key = name.toLowerCase()
+  const list = session.active ? session.whitelist : ensureDefaultWhitelist()
+  const entry = list.find(a => a.name.toLowerCase() === key && (a.titleMatch || '') === (titleMatch || ''))
+    || list.find(a => a.name.toLowerCase() === key && !a.titleMatch)
+  if (!entry) return
+  const procName = entry.name.toLowerCase().replace(/\.exe$/, '').replace(/'/g, "''")
+  await killProcess(procName)
+  // 等进程完全退出（最多 5s），确保单实例应用能干净启动
+  for (let i = 0; i < 10; i++) {
+    if (!(await processExists(procName))) break
+    await new Promise(r => setTimeout(r, 500))
+  }
+  let path = entry.path
+  if (!path) path = await resolveAppPath(entry.name)
+  if (!path) {
+    console.warn('[focus] 找不到', entry.name, '的路径，无法重启')
+    return
+  }
+  try {
+    const child = spawn(path, [], { detached: true, stdio: 'ignore', windowsHide: true })
+    child.on('error', (err) => console.error('[focus] 重启失败:', entry.name, err.message))
+    child.unref()
+    session.grace = { name: entry.name.toLowerCase(), until: Date.now() + 30_000, videoWasOpen: false }
+    console.log('[focus] 强制重启:', entry.name)
+    void waitForMainWindow(entry)
+  } catch (err) {
+    console.error('[focus] 重启失败:', entry.name, err)
+  }
+}
+
+async function doLaunchFocusApp(name: string, titleMatch?: string): Promise<void> {
+  const key = name.toLowerCase()
+  const selfBase = SELF_NAME.replace(/\.exe$/i, '')
+  // 白名单自动加入的"澜山"条目存的是开发态进程名 electron.exe，打包后进程名是 澜山.exe——
+  // 三种都识别为澜山自身（打开主窗口），否则打包版点"澜山"图标走失败路径没反应
+  if (key === SELF_NAME || key === selfBase || key === 'electron' || key === 'electron.exe') {
     const main = hooks.getMainWindow()
     if (main) {
       if (main.isMinimized()) main.restore()
@@ -1105,53 +1154,56 @@ export async function launchFocusApp(name: string, titleMatch?: string): Promise
   await launchFocusAppFallback(entry)
 }
 
-/** 常规流程：确保进程存在 → 切到匹配窗口/主界面 + 30 秒宽限 */
+/** 常规流程：确保进程有可见窗口 → 切到匹配窗口/主界面 + 30 秒宽限。
+ *  逻辑刻意保持简单（用户要求）：
+ *  - 有可见窗口（含最小化，最小化窗口 IsWindowVisible=true）→ 直接切换
+ *  - 无可见窗口（点了右上角 X 关闭、窗口已销毁）→ 杀掉进程重新启动，保证窗口必然弹出。
+ *    恢复"隐藏的旧窗口"那套复杂机制已废弃——旧窗口状态不可靠（黑屏/卡死），重启最稳。 */
 async function launchFocusAppFallback(entry: FocusApp): Promise<void> {
   const procName = entry.name.toLowerCase().replace(/\.exe$/, '').replace(/'/g, "''")
   const windows = await getProcessWindows(procName)
-  // 1) 确保进程存在：没有则启动（否则点击没反应）。
-  //    进程在（含托盘/隐藏窗口）→ 只恢复弹出窗口，绝不重启（重启慢、双实例）；
-  //    进程确实不存在 → 才启动新实例。
-  if (windows.length === 0) {
-    let path = entry.path
-    if (!path) path = await resolveAppPath(entry.name)
-    if (!path) {
-      console.warn('[focus] 找不到', entry.name, '的路径，无法启动')
-      return
-    }
-    if (await processExists(procName)) {
-      // 进程在 → 恢复隐藏窗口直接弹出并抬升（不重启，秒出）
-      const restored = await restoreHiddenWindows(procName)
-      if (restored.length > 0) {
-        console.log('[focus] 已恢复隐藏窗口', restored.length, '个:', entry.name)
-        // 直接抬升恢复的窗口（跳过 waitForMainWindow 重复枚举，弹出更快）
-        const hwnd = restored[0]
-        await raiseHwndAboveOverlay(hwnd)
-        raisedHwnds.add(hwnd)
-        lastRaisedHwnd = hwnd
-        session.grace = { name: entry.name.toLowerCase(), until: Date.now() + 30_000, videoWasOpen: false }
-        windowSeen.delete(hwnd)  // 重置主界面 30s 计时（重新出现重新计时）
-      } else {
-        console.warn('[focus] 进程存在但无窗口可恢复，不重启:', entry.name)
-      }
-      return
-    }
-    try {
-      const child = spawn(path, [], { detached: true, stdio: 'ignore', windowsHide: true })
-      child.on('error', (err) => console.error('[focus] 启动失败:', entry.name, err.message))
-      child.unref()
-      // 给宽限：客户端启动后用户在主界面手动找内容（浏览器走 URL 直达，不需要）
-      session.grace = { name: entry.name.toLowerCase(), until: Date.now() + 30_000, videoWasOpen: false }
-      console.log('[focus] 已启动', entry.name)
-      void waitForMainWindow(entry)
-    } catch (err) {
-      console.error('[focus] 启动失败:', entry.name, err)
-    }
+  if (windows.length > 0) {
+    // 有可见窗口（最小化的窗口也在列）→ 切到匹配窗口/主界面
+    await activateWindow(entry, windows)
     return
   }
-  // 2) 有进程 → 窗口级条目优先切到「已匹配关键词」的窗口；
-  //    没有匹配窗口则显示主界面。无论哪种，都给 30 秒宽限——
-  //    用户切到主界面找其他内容时不会被盖回（Bug 修复：匹配窗口存在时主界面也要放行）。
+  // 无可见窗口 → 杀进程 + 重启（单实例应用不会撞车，新实例必然弹窗）
+  let path = entry.path
+  if (!path) path = await resolveAppPath(entry.name)
+  if (!path) {
+    console.warn('[focus] 找不到', entry.name, '的路径，无法启动')
+    return
+  }
+  if (await processExists(procName)) {
+    console.log('[focus] 无可见窗口，杀掉进程后重启:', entry.name)
+    await killProcess(procName)
+    // 等进程完全退出（最多 5s），确保单实例应用能干净启动
+    for (let i = 0; i < 10; i++) {
+      if (!(await processExists(procName))) break
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
+  try {
+    const child = spawn(path, [], { detached: true, stdio: 'ignore', windowsHide: true })
+    child.on('error', (err) => console.error('[focus] 启动失败:', entry.name, err.message))
+    child.unref()
+    // 给宽限：客户端启动后用户在主界面手动找内容（浏览器走 URL 直达，不需要）
+    session.grace = { name: entry.name.toLowerCase(), until: Date.now() + 30_000, videoWasOpen: false }
+    console.log('[focus] 已启动', entry.name)
+    void waitForMainWindow(entry)
+  } catch (err) {
+    console.error('[focus] 启动失败:', entry.name, err)
+  }
+}
+
+/**
+ * 有可见窗口时的前台切换 + 抬升 + 30 秒宽限。
+ * 匹配窗口直接切；没有匹配窗口则切主界面（宽限期间不会被巡逻盖回）。
+ */
+async function activateWindow(
+  entry: FocusApp,
+  windows: { hwndHex: string; pid: number; title: string }[]
+): Promise<void> {
   const procBase = entry.name.toLowerCase().replace(/\.exe$/, '')
   const matched = entry.titleMatch
     ? windows.find(w => titleMatches(entry, w.title))
@@ -1176,13 +1228,14 @@ async function launchFocusAppFallback(entry: FocusApp): Promise<void> {
 }
 
 /**
- * 启动/导航后轮询等待窗口出现（最多 6s），出现即抬升并标记为"点击打开的窗口"（放行）。
+ * 启动/导航后轮询等待窗口出现（最多 15s），出现即抬升并标记为"点击打开的窗口"（放行）。
  * 匹配窗口直接抬升；没有匹配窗口则抬升主界面窗口（宽限已在调用处设置）。
+ * 调用前进程已被杀掉重启（干净启动），窗口必然正常出现，不需要恢复隐藏窗口的机制。
  */
 async function waitForMainWindow(entry: FocusApp): Promise<void> {
   const procName = entry.name.toLowerCase().replace(/\.exe$/, '').replace(/'/g, "''")
   const procBase = entry.name.toLowerCase().replace(/\.exe$/, '')
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 50; i++) {
     await new Promise(r => setTimeout(r, 300))
     const windows = await getProcessWindows(procName)
     if (windows.length === 0) continue
@@ -1193,6 +1246,9 @@ async function waitForMainWindow(entry: FocusApp): Promise<void> {
     const main = matched || (entry.titleMatch
       ? windows.find(w => w.title.toLowerCase().includes(procBase)) || windows[0]
       : windows[0])
+    // 窗口刚创建时内容可能还没渲染（黑屏）：等 400ms 让应用完成初始化再抬升，
+    // 避免把初始化中的窗口提前置顶/抢焦点导致黑屏卡死（用户反馈"黑窗口+本体窗口"）
+    await new Promise(r => setTimeout(r, 400))
     await raiseHwndAboveOverlay(main.hwndHex)
     raisedHwnds.add(main.hwndHex)
     lastRaisedHwnd = main.hwndHex
@@ -1200,7 +1256,7 @@ async function waitForMainWindow(entry: FocusApp): Promise<void> {
     console.log('[focus]', entry.name, '已启动' + (matched ? '，已切到匹配窗口' : '，已显示主界面'))
     return
   }
-  console.warn('[focus]', entry.name, '启动后 6s 内未检测到窗口')
+  console.warn('[focus]', entry.name, '启动后 15s 内未检测到窗口')
 }
 
 /** 把指定窗口切到前台（恢复最小化 + SetForegroundWindow） */

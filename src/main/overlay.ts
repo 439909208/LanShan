@@ -31,6 +31,7 @@ export function createFocusOverlays(): BrowserWindow[] {
       show: false,
       skipTaskbar: true,
       title: '澜山 · 专注桌面',
+      icon: join(__dirname, '../../resources/icon.png'),
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         sandbox: false,
