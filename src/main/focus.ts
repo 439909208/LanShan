@@ -813,7 +813,23 @@ export async function restoreTaskbarNow(): Promise<void> {
  * 列出当前用户会话的全部进程（含无窗口的后台程序）+ 每进程的窗口。
  * 返回扁平数组：有窗口的进程每窗口一行（title 有值），无窗口进程一行（title 为空）。
  */
+
+/** getRunningApps 结果缓存：枚举窗口是 PowerShell 重操作，
+ *  渲染端轮询时 6 秒内的重复请求直接返回缓存，避免频繁启动 PS 进程 */
+let runningAppsCache: { data: FocusApp[]; at: number } | null = null
+const RUNNING_APPS_CACHE_MS = 6000
+
 export async function getRunningApps(): Promise<FocusApp[]> {
+  const now = Date.now()
+  if (runningAppsCache && now - runningAppsCache.at < RUNNING_APPS_CACHE_MS) {
+    return runningAppsCache.data
+  }
+  const apps = await collectRunningApps()
+  runningAppsCache = { data: apps, at: Date.now() }
+  return apps
+}
+
+async function collectRunningApps(): Promise<FocusApp[]> {
   const script = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public static class RA{[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb,IntPtr l);[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);}'
 $winMap=@{}
 $cb=[RA+EnumWindowsProc]{param($h,$l)

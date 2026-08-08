@@ -56,6 +56,12 @@ const api = {
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('minimize-window'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('maximize-window'),
   closeWindow: (): Promise<void> => ipcRenderer.invoke('close-window'),
+  /** 订阅最大化状态变化（内置最大化按钮图标切换用），返回取消订阅函数 */
+  onMaximizeChange: (cb: (maximized: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, v: boolean): void => cb(v)
+    ipcRenderer.on('window-maximized', listener)
+    return () => ipcRenderer.removeListener('window-maximized', listener)
+  },
   setAutoStart: (enable: boolean): Promise<void> => ipcRenderer.invoke('set-auto-start', enable),
   exportData: (): Promise<boolean> => ipcRenderer.invoke('export-data'),
   syncNow: (): Promise<boolean> => ipcRenderer.invoke('sync-now'),

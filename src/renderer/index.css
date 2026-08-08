@@ -55,9 +55,10 @@ html, body, #root {
   width: 100%;
 }
 
+/* 注意：这里不能写 * { margin:0; padding:0 } —— 非分层规则会压过 Tailwind v4
+   的 @layer 工具类（@layer utilities 里的 px-*/m-* 全部失效）。
+   全局重置由 Tailwind preflight（@layer base）负责，这里只保留 box-sizing。 */
 * {
-  margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
@@ -210,4 +211,242 @@ body {
   border-radius: 2px;
   animation: focus-particle linear forwards;
   pointer-events: none;
+}
+
+/* ─── 专注桌面 HUD 科技风 ─── */
+
+/* 等宽数字/代码字体（数据读数、HUD 标签） */
+.mono {
+  font-family: 'Consolas', 'SF Mono', 'JetBrains Mono', 'Cascadia Mono', Menlo, monospace;
+}
+
+/* 全屏扫描线：缓慢从顶部扫到底部 */
+.scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 160px;
+  background: linear-gradient(180deg, transparent 0%, rgba(52, 211, 153, 0.05) 50%, transparent 100%);
+  pointer-events: none;
+  z-index: 1;
+  animation: scan-sweep 9s linear infinite;
+}
+
+@keyframes scan-sweep {
+  0% { top: -20%; }
+  100% { top: 120%; }
+}
+
+/* 状态指示灯：扩散式脉冲 */
+@keyframes focus-ping {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); }
+  100% { box-shadow: 0 0 0 10px rgba(52, 211, 153, 0); }
+}
+
+.focus-ping {
+  animation: focus-ping 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* HUD 面板内部细滚动条 */
+.hud-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.hud-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hud-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 233, 192, 0.25);
+  border-radius: 4px;
+  border: none;
+}
+
+.hud-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 233, 192, 0.45);
+}
+
+/* ─── 专注桌面 v2：现代交互动效 ─── */
+
+/* HUD 面板鼠标跟随光晕（--mx/--my 由 React onMouseMove 写入） */
+.hud-glow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(360px circle at var(--mx, 50%) var(--my, 50%), rgba(52, 211, 153, 0.09), transparent 65%);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.hud-glow:hover::after {
+  opacity: 1;
+}
+
+/* 图标点击涟漪：以图标为中心的正圆扩散（尺寸随视口缩放，与图标卡保持比例） */
+@keyframes tile-ripple {
+  0% { transform: scale(0.25); opacity: 0.65; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+.tile-ripple {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  width: clamp(52px, 2.6vw, 72px);
+  height: clamp(52px, 2.6vw, 72px);
+  margin-left: calc(clamp(52px, 2.6vw, 72px) / -2);
+  margin-top: calc(clamp(52px, 2.6vw, 72px) / -2);
+  border-radius: 9999px;
+  border: 2px solid rgba(52, 211, 153, 0.75);
+  animation: tile-ripple 0.55s ease-out forwards;
+  pointer-events: none;
+}
+
+/* 倒计时整分钟：环辉光脉冲 */
+@keyframes ring-glow {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+  30% { box-shadow: 0 0 0 14px rgba(52, 211, 153, 0.18); }
+  100% { box-shadow: 0 0 0 34px rgba(52, 211, 153, 0); }
+}
+
+.ring-pulse {
+  border-radius: 9999px;
+  animation: ring-glow 1.3s ease-out;
+}
+
+/* 环境音播放时的均衡器跳动 */
+@keyframes eq-bounce {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+}
+
+.eq-bar {
+  width: 3px;
+  border-radius: 2px;
+  background: #34d399;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.7);
+  transform-origin: bottom;
+  animation: eq-bounce 0.7s ease-in-out infinite;
+}
+
+/* 🔊 开启时的脉冲角标 */
+@keyframes sound-ping {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+  100% { box-shadow: 0 0 0 9px rgba(52, 211, 153, 0); }
+}
+
+.sound-ping {
+  animation: sound-ping 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* 提醒气泡弹入 */
+@keyframes remind-pop {
+  0% { opacity: 0; transform: translateY(12px) scale(0.94); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.remind-pop {
+  animation: remind-pop 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 激励语录淡入 */
+@keyframes quote-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.quote-fade {
+  animation: quote-in 0.9s ease-out;
+}
+
+/* 控制中心音量滑块（赛博风格） */
+input[type='range'].cyber-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.12);
+  outline: none;
+}
+
+input[type='range'].cyber-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #34d399;
+  border: 2px solid rgba(240, 253, 250, 0.85);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.8);
+  cursor: pointer;
+}
+
+/* 控制中心开关（自绘 toggle） */
+.cyber-toggle {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.14);
+  transition: background 0.25s;
+  flex-shrink: 0;
+}
+
+.cyber-toggle.on {
+  background: #10b981;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+}
+
+.cyber-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f0fdfa;
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cyber-toggle.on::after {
+  transform: translateX(16px);
+}
+
+/* 控制中心分段按钮 */
+.cyber-seg {
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-family: Consolas, 'SF Mono', Menlo, monospace;
+  letter-spacing: 0.08em;
+  color: rgba(236, 253, 245, 0.55);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.2s;
+}
+
+.cyber-seg:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.cyber-seg.on {
+  color: #022c22;
+  background: linear-gradient(135deg, #34d399, #10b981);
+  border-color: transparent;
+  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.4);
+}
+
+/* 7 日柱状图柱子 hover */
+.week-bar {
+  transition: transform 0.2s, filter 0.2s;
+}
+
+.week-bar:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.25);
 }

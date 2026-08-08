@@ -27,7 +27,10 @@ export default function Settings(): React.ReactElement {
   }
 
   return (
-    <div className="space-y-5 max-w-2xl">
+    <div className="space-y-5 max-w-[1600px] mx-auto">
+      {/* 双栏网格：左列外观/暑假/目标/补签/测试，右列盈余/提醒/算法/规则/其他（lg=1024px 起双栏） */}
+      <div className="grid gap-5 lg:grid-cols-2 items-start">
+        <div className="space-y-5">
       {/* Appearance */}
       <div className="card">
         <h3 className="text-base font-medium mb-5" style={{ color: 'var(--text-secondary)' }}>
@@ -153,6 +156,26 @@ export default function Settings(): React.ReactElement {
         </p>
       </div>
 
+      {/* Test Toast */}
+      <div className="card">
+        <h3 className="text-base font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
+          🔔 测试
+        </h3>
+        <button
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('achievement-unlock', {
+              detail: ['total-30h']
+            }))
+          }}
+          className="px-5 py-2.5 rounded-xl text-sm font-medium transition-all"
+          style={{ background: 'var(--accent)', color: 'white' }}
+        >
+          🎉 测试成就弹窗
+        </button>
+      </div>
+        </div>
+
+        <div className="space-y-5">
       {/* 盈余统计 */}
       <div className="card">
         <h3 className="text-base font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
@@ -236,24 +259,6 @@ export default function Settings(): React.ReactElement {
       {/* Classification Rules */}
       <ClassificationRules />
 
-      {/* Test Toast */}
-      <div className="card">
-        <h3 className="text-base font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
-          🔔 测试
-        </h3>
-        <button
-          onClick={() => {
-            window.dispatchEvent(new CustomEvent('achievement-unlock', {
-              detail: ['total-30h']
-            }))
-          }}
-          className="px-5 py-2.5 rounded-xl text-sm font-medium transition-all"
-          style={{ background: 'var(--accent)', color: 'white' }}
-        >
-          🎉 测试成就弹窗
-        </button>
-      </div>
-
       {/* Other Settings */}
       <div className="card">
         <h3 className="text-base font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
@@ -281,6 +286,8 @@ export default function Settings(): React.ReactElement {
           >
             📤 导出数据 (JSON)
           </button>
+        </div>
+      </div>
         </div>
       </div>
     </div>

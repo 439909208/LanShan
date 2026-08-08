@@ -15,3 +15,9 @@ release/
 .zcode/
 lanshan.log
 bili-monitor-*.log
+
+# Local test tools / preview (not for repo)
+_stub/
+_test_*.bat
+enc_test.log
+pipe_test.log

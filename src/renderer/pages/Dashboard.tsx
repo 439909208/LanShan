@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getSubjectIcon, getSubjectTierIcon, formatDuration, formatShortDuration } from '../utils'
 
@@ -41,6 +41,81 @@ export default function Dashboard(): React.ReactElement {
   const [weekData, setWeekData] = useState<any[]>([])
   const [prevWeekData, setPrevWeekData] = useState<any[]>([])
   const [showAchievements, setShowAchievements] = useState(false)
+  // 每个框高度可拖拽自定义：null = 默认 flex 比例，拖拽后 = 固定 px（localStorage 持久化）
+  // keys: ring/heat/achieve（左列）, data/trend/timeline（右列）, miniRow（数据卡内第一行）
+  const [cardHs, setCardHs] = useState<Record<string, number | null>>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem('dashboard-card-hs') || '{}') as Record<string, number | null>
+      if (v && typeof v === 'object') return v
+    } catch { /* 忽略损坏数据 */ }
+    return {}
+  })
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  /** 通用拖拽：按住把手上下拖动，实时回调高度，松手持久化 */
+  function startDrag(
+    getStartH: () => number,
+    onDrag: (h: number) => void,
+    onEnd: () => void
+  ): (e: React.MouseEvent) => void {
+    return (e: React.MouseEvent): void => {
+      e.preventDefault()
+      dragRef.current = { startY: e.clientY, startH: getStartH() }
+      const onMove = (ev: MouseEvent): void => {
+        if (!dragRef.current) return
+        const h = Math.min(600, Math.max(100, dragRef.current.startH + (ev.clientY - dragRef.current.startY)))
+        onDrag(Math.round(h))
+      }
+      const onUp = (): void => {
+        dragRef.current = null
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        onEnd()
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    }
+  }
+
+  /** 大框把手：调整某个框的高度（同列其他框自动让位） */
+  function onCardHandleDown(key: string, e: React.MouseEvent): void {
+    const card = (e.currentTarget as HTMLElement).parentElement
+    if (!card) return
+    startDrag(
+      () => card.getBoundingClientRect().height,
+      (h) => setCardHs(prev => ({ ...prev, [key]: h })),
+      () => setCardHs(prev => { localStorage.setItem('dashboard-card-hs', JSON.stringify(prev)); return prev })
+    )(e)
+  }
+
+  /** 数据统计卡内两行把手：调整 3+3 小卡两行比例 */
+  function onMiniRowHandleDown(e: React.MouseEvent): void {
+    const row = (e.currentTarget as HTMLElement).parentElement?.querySelector(':scope > .grid') as HTMLElement | null
+    if (!row) return
+    startDrag(
+      () => row.getBoundingClientRect().height,
+      (h) => setCardHs(prev => ({ ...prev, miniRow: h })),
+      () => setCardHs(prev => { localStorage.setItem('dashboard-card-hs', JSON.stringify(prev)); return prev })
+    )(e)
+  }
+
+  /** 框样式：拖过 = 固定高度，未拖 = 默认 flex 比例 */
+  function cardStyle(key: string, defaultFlex: string | number): React.CSSProperties {
+    return cardHs[key] != null ? { flex: 'none', height: cardHs[key] as number } : { flex: defaultFlex }
+  }
+
+  /** 拖拽把手 UI（悬停显示小横条） */
+  function Handle({ onMouseDown, title }: { onMouseDown: (e: React.MouseEvent) => void; title: string }): React.ReactElement {
+    return (
+      <div
+        onMouseDown={onMouseDown}
+        className="absolute bottom-0 inset-x-0 h-2.5 cursor-ns-resize flex items-center justify-center select-none z-10"
+        title={title}
+      >
+        <div className="w-12 h-1 rounded-full opacity-0 group-hover:opacity-70 transition-opacity" style={{ background: 'var(--text-muted)' }} />
+      </div>
+    )
+  }
 
   useEffect(() => {
     loadData()
@@ -144,27 +219,29 @@ export default function Dashboard(): React.ReactElement {
         )}
       </div>
       <div className="grid grid-cols-3 gap-5 h-full">
-        {/* 左侧：环形图(2/5) + 热力图(2/5) + 成就(1/5) */}
+        {/* 左侧：环形图 + 热力图 + 成就（每个框底部把手可拖拽调高） */}
         <div className="flex flex-col gap-5 h-full overflow-y-auto">
-          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.5' }}>
+          <div className="card flex flex-col min-h-0 overflow-hidden relative group" style={cardStyle('ring', '1.5')}>
             <h3 className="text-sm font-medium mb-3 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
               使用情况
             </h3>
             <div className="flex-1 min-h-0">
               <SubjectRingChart data={ringData} />
             </div>
+            <Handle onMouseDown={(e) => onCardHandleDown('ring', e)} title="拖动调整高度" />
           </div>
-          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '2.3' }}>
+          <div className="card flex flex-col min-h-0 overflow-hidden relative group" style={cardStyle('heat', '2.3')}>
             <h3 className="text-sm font-medium mb-3 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
               🔥 热力图
             </h3>
             <div className="flex-1 min-h-0">
               <HeatmapGrid />
             </div>
+            <Handle onMouseDown={(e) => onCardHandleDown('heat', e)} title="拖动调整高度" />
           </div>
           <div
-            className="card flex flex-col min-h-0 overflow-hidden cursor-pointer transition-all hover:border-[var(--border-light)]"
-            style={{ flex: '1.2' }}
+            className="card flex flex-col min-h-0 overflow-hidden cursor-pointer transition-all hover:border-[var(--border-light)] relative group"
+            style={cardStyle('achieve', '1.2')}
             onClick={() => setShowAchievements(true)}
           >
             <div className="flex items-center justify-between flex-shrink-0 mb-2">
@@ -176,24 +253,39 @@ export default function Dashboard(): React.ReactElement {
             <div className="flex-1 min-h-0 overflow-y-auto">
               <AchievementList compact />
             </div>
+            <Handle onMouseDown={(e) => onCardHandleDown('achieve', e)} title="拖动调整高度" />
           </div>
         </div>
 
-        {/* 右侧：数据卡片 + 进度卡片 + 趋势图 — 占 2 列 */}
+        {/* 右侧：数据卡片 + 进度卡片 + 趋势图 — 占 2 列（每个框底部把手可拖拽调高） */}
         <div className="col-span-2 flex flex-col gap-5">
-          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.5' }}>
-            <div className="grid grid-cols-3 gap-5 flex-1 pt-3">
+          {/* 数据统计卡：框可拖高；框内 6 个小卡两行之间也可拖动调整比例，内容随高度自动缩放 */}
+          <div
+            className="card flex flex-col min-h-0 overflow-hidden relative group"
+            style={{ ...cardStyle('data', '1.5'), containerType: 'size' }}
+          >
+            <div className="grid grid-cols-3 gap-3 flex-1 pt-2 relative" style={cardHs['miniRow'] != null ? { flex: 'none', height: cardHs['miniRow'] as number } : undefined}>
               <MiniCard icon="📊" value={formatDuration(totalToday)} label={isToday ? '今日学习' : selectedDate + ' 学习'} />
               <MiniCard icon="🔥" value={`${consecutiveDays} 天`} label="连续打卡" sub={`最长 ${maxConsecutive} 天`} />
               <MiniCard icon="🏆" value={formatShortDuration(totalAllTime)} label="累计总时长" />
             </div>
-            <div className="grid grid-cols-3 gap-5 flex-1 pb-3">
+            <div className="grid grid-cols-3 gap-3 flex-1 pb-2">
               {progress.map((p) => (
                 <SubjectCard key={p.subject} progress={p} />
               ))}
             </div>
+            {/* 框内两行把手（3+3 小卡比例） */}
+            <div
+              onMouseDown={onMiniRowHandleDown}
+              className="absolute left-0 right-0 h-2.5 cursor-ns-resize flex items-center justify-center select-none z-10"
+              style={{ top: 'calc(50% + 2px)' }}
+              title="拖动调整上下两行小卡比例"
+            >
+              <div className="w-12 h-1 rounded-full opacity-0 group-hover:opacity-70 transition-opacity" style={{ background: 'var(--text-muted)' }} />
+            </div>
+            <Handle onMouseDown={(e) => onCardHandleDown('data', e)} title="拖动调整框高度（6 个小卡自动适应）" />
           </div>
-          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '2.3' }}>
+          <div className="card flex flex-col min-h-0 overflow-hidden relative group" style={cardStyle('trend', '2.3')}>
             <div className="flex items-baseline justify-between mb-3 flex-shrink-0">
               <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
                 本周趋势
@@ -209,12 +301,14 @@ export default function Dashboard(): React.ReactElement {
                 coreSubjects={coreSubjects}
               />
             </div>
+            <Handle onMouseDown={(e) => onCardHandleDown('trend', e)} title="拖动调整高度" />
           </div>
-          <div className="card flex flex-col min-h-0 overflow-hidden" style={{ flex: '1.2' }}>
+          <div className="card flex flex-col min-h-0 overflow-hidden relative group" style={cardStyle('timeline', '1.2')}>
             <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
               🕐 {isToday ? '今日时间轴' : selectedDate + ' 时间轴'}
             </h3>
             <Timeline date={selectedDate} />
+            <Handle onMouseDown={(e) => onCardHandleDown('timeline', e)} title="拖动调整高度" />
           </div>
         </div>
       </div>
@@ -229,7 +323,7 @@ function fmtMonthDay(dateStr: string): string {
   return `${parseInt(m, 10)}月${parseInt(d, 10)}日`
 }
 
-/** Mini data card for the top row */
+/** Mini data card（cqh 在数据统计卡框内自适应缩放：框不变，内容随框自动调整大小） */
 function MiniCard({ icon, value, label, sub }: {
   icon: string
   value: string
@@ -237,18 +331,18 @@ function MiniCard({ icon, value, label, sub }: {
   sub?: string
 }): React.ReactElement {
   return (
-    <div className="card flex items-center gap-5 py-6 px-6 h-full">
-      <span className="text-3xl flex-shrink-0">{icon}</span>
+    <div className="card flex items-center gap-2.5 px-3 h-full min-w-0" style={{ padding: '2.5cqh 12px' }}>
+      <span className="flex-shrink-0" style={{ fontSize: '8.4cqh' }}>{icon}</span>
       <div className="min-w-0">
-        <p className="text-2xl font-bold tabular-nums leading-tight truncate">{value}</p>
-        <p className="text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>{label}</p>
-        {sub && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
+        <p className="font-bold tabular-nums leading-none truncate" style={{ fontSize: '8cqh' }}>{value}</p>
+        <p className="mt-1 truncate" style={{ fontSize: '4.6cqh', lineHeight: 1.2, color: 'var(--text-secondary)' }}>{label}</p>
+        {sub && <p className="truncate" style={{ fontSize: '3.8cqh', lineHeight: 1.2, color: 'var(--text-muted)' }}>{sub}</p>}
       </div>
     </div>
   )
 }
 
-/** Subject progress card with colored accent bar */
+/** Subject progress card（cqh 在数据统计卡框内自适应缩放：框不变，内容随框自动调整大小） */
 function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactElement {
   const { subject, totalSeconds, targetSeconds, achieved, exceeded, color, icon } = progress
   const percent = Math.min((totalSeconds / targetSeconds) * 100, 100)
@@ -257,23 +351,27 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
   const hasTodaySurplus = totalSeconds > targetSeconds
 
   return (
-    <div className="card flex flex-col gap-4 py-6 px-6 h-full relative overflow-hidden">
+    <div className="card relative overflow-hidden h-full flex flex-col justify-between px-3 min-w-0" style={{ padding: '2.5cqh 12px' }}>
       {/* 左侧彩色竖条 */}
-      <div className="absolute left-0 top-4 bottom-4 w-1 rounded-r-full" style={{ background: color }} />
-      
-      {/* Header: icon + subject + status badge */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          {/* 圆形图标背景 */}
-          <span className="w-10 h-10 rounded-full flex items-center justify-center text-lg"
-            style={{ background: color + '20', color }}>
+      <div className="absolute left-0 rounded-r-full" style={{ background: color, width: '1.5cqh', top: '2.5cqh', bottom: '2.5cqh' }} />
+
+      {/* 行1：圆形图标 + 科目 + 状态徽章 */}
+      <div className="flex items-center justify-between gap-1.5 flex-shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ width: '8cqh', height: '8cqh', fontSize: '4cqh', background: color + '20', color }}
+          >
             {icon}
           </span>
-          <span className="text-lg font-semibold">{subject}</span>
+          <span className="font-semibold truncate" style={{ fontSize: '5.3cqh', lineHeight: 1.1 }}>{subject}</span>
         </div>
         <span
-          className="text-xs font-medium px-2.5 py-1 rounded-full"
+          className="font-medium rounded-full flex-shrink-0"
           style={{
+            fontSize: '3.8cqh',
+            lineHeight: 1.1,
+            padding: '1.5cqh 3cqh',
             background: achieved
               ? (exceeded ? 'rgba(251,191,36,0.15)' : 'rgba(34,197,94,0.15)')
               : 'var(--accent-bg)',
@@ -286,19 +384,19 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
         </span>
       </div>
 
-      {/* Duration */}
-      <div className="flex items-baseline gap-2">
-        <span className="text-3xl font-bold tabular-nums" style={{ color: exceeded ? '#fbbf24' : 'var(--text-primary)' }}>
+      {/* 行2：大时长 */}
+      <div className="flex items-baseline gap-1.5 flex-shrink-0">
+        <span className="font-bold tabular-nums" style={{ fontSize: '7cqh', lineHeight: 1.1, color: exceeded ? '#fbbf24' : 'var(--text-primary)' }}>
           {formatDuration(totalSeconds)}
         </span>
-        <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        <span style={{ fontSize: '3.8cqh', lineHeight: 1.1, color: 'var(--text-secondary)' }}>
           / {formatDuration(targetSeconds)}
         </span>
-        {exceeded && <span className="text-xl" style={{ color: '#fbbf24' }}>✨</span>}
+        {exceeded && <span style={{ fontSize: '5cqh', color: '#fbbf24' }}>✨</span>}
       </div>
 
-      {/* 今日进度条：当天该科有盈余时，末尾渐变金光 */}
-      <div className="h-4 rounded-full overflow-hidden" style={{ background: 'var(--progress-track)' }}>
+      {/* 行3：进度条（盈余金光） */}
+      <div className="rounded-full overflow-hidden flex-shrink-0" style={{ height: '2.3cqh', background: 'var(--progress-track)' }}>
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{
@@ -310,17 +408,12 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
         />
       </div>
 
-      {/* Status message */}
-      <p
-        className="text-xs flex items-center gap-1 flex-wrap"
-        style={{ color: achieved ? (exceeded ? '#fbbf24' : '#22c55e') : 'var(--text-muted)' }}
-      >
+      {/* 行4：状态文字 */}
+      <p className="truncate flex-shrink-0" style={{ fontSize: '3.8cqh', lineHeight: 1.1, color: achieved ? (exceeded ? '#fbbf24' : '#22c55e') : 'var(--text-muted)' }}>
         {!achieved && `还差 ${formatDuration(remaining)} 达标`}
         {achieved && !exceeded && '今日目标已达成 ✓'}
         {exceeded && `超额 ${Math.round((totalSeconds / targetSeconds) * 100)}%！`}
-        {hasTodaySurplus && (
-          <span style={{ color: '#fbbf24' }}>✨ 今日盈余 +{formatDuration(exceedAmount)}</span>
-        )}
+        {hasTodaySurplus && ` · 盈余 +${formatDuration(exceedAmount)}`}
       </p>
     </div>
   )

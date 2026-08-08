@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, screen } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
 import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, getRawTitleStats, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange, getMakeupFills, getMakeupAvailability, applyMakeup, undoMakeup } from './database'
@@ -21,11 +21,20 @@ const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
+  // 窗口与正常软件一致：横向比例（宽>高）。页面内容纵向排列由渲染端负责。
+  // 最大化 = 全屏（覆盖任务栏，用户要求），Esc 退出全屏。
+  const workArea = screen.getPrimaryDisplay().workAreaSize
+  const winW = Math.min(1440, workArea.width - 80)
+  const winH = Math.min(900, workArea.height - 60)
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: winW,
+    height: winH,
     minWidth: 900,
     minHeight: 600,
+    maxWidth: workArea.width,
+    maxHeight: workArea.height,
+    // 无边框：去掉系统标题栏/最小化/最大化/关闭三键，窗口控制内置到软件界面（更清晰统一）
+    frame: false,
     show: false,
     title: '澜山',
     icon: join(__dirname, '../../resources/icon.png'),
@@ -43,6 +52,15 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  // 最大化状态广播给渲染端（内置最大化按钮图标切换用）。
+  // 与常规软件一致：最大化 = 铺满工作区（任务栏保留显示）
+  mainWindow.on('maximize', () => {
+    mainWindow?.webContents.send('window-maximized', true)
+  })
+  mainWindow.on('unmaximize', () => {
+    mainWindow?.webContents.send('window-maximized', false)
+  })
 
   // Hide instead of close
   mainWindow.on('close', (event) => {
@@ -203,7 +221,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('undo-makeup', (_event, date: string, subject: Subject) => undoMakeup(date, subject))
   ipcMain.handle('get-achievements', () => getAchievementProgress())
 
-  // Window controls
+  // Window controls（无边框内置按钮）：最大化 = 铺满工作区（与常规软件一致，任务栏保留）
   ipcMain.handle('minimize-window', () => mainWindow?.minimize())
   ipcMain.handle('maximize-window', () => {
     if (mainWindow?.isMaximized()) {

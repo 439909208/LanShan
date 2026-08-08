@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { formatCountdown, formatDuration, getSubjectColor, getSubjectIcon, focusEntryKey, sortWhitelistByOrder } from '../utils'
 
 /** 背景主题：氛围色 → 深色渐变背景（与 🎨 色板一一对应） */
@@ -18,6 +18,276 @@ interface TodayStats {
   subjects: { subject: string; seconds: number; target: number }[]
 }
 
+/** 近 7 日数据（周一到周日） */
+interface WeekDay {
+  date: string
+  total: number
+}
+
+/** 已专注进度燃料条的分段数 */
+const GAUGE_SEGMENTS = 16
+
+/** 环境音类型 */
+type NoiseKind = 'off' | 'rain' | 'ocean' | 'fire' | 'white'
+
+const NOISE_OPTIONS: { kind: Exclude<NoiseKind, 'off'>; label: string; icon: string }[] = [
+  { kind: 'rain', label: '雨声', icon: '🌧' },
+  { kind: 'ocean', label: '海浪', icon: '🌊' },
+  { kind: 'fire', label: '篝火', icon: '🔥' },
+  { kind: 'white', label: '白噪', icon: '⚪' },
+]
+
+/** 休息提醒间隔选项（分钟），0 = 关闭 */
+const REMIND_OPTIONS = [0, 25, 45, 60]
+
+const REMIND_TEXTS = [
+  '💧 喝口水，顺便让眼睛休息一下',
+  '🧘 站起来伸个懒腰，活动一下肩颈',
+  '🌿 深呼吸三次，调整状态继续',
+  '👀 眺望远处 20 秒，放松睫状肌',
+]
+
+/** 激励语录 */
+const QUOTES = [
+  '专注是送给未来的自己最好的礼物。',
+  '每一次坚持，都在悄悄拉开差距。',
+  '沉下心来的每一分钟，都算数。',
+  '把注意力放在当下，结果自然发生。',
+  '真正的自律，是把小事重复做到极致。',
+  '你现在流的每一滴汗，都在浇灌未来。',
+  '慢一点没关系，只要一直在前进。',
+  '心无旁骛，万夫莫开。',
+  '今日的积累，是明日从容的底气。',
+  '关掉喧嚣，世界会还你一片安静的力量。',
+  '学得进去的每一刻，都值得被记录。',
+  '专注当下，未来自有答案。',
+]
+
+/** ─── Web Audio 环境音引擎（实时合成，无需音频文件） ─── */
+class NoiseEngine {
+  private ctx: AudioContext | null = null
+  private master: GainNode | null = null
+  private nodes: AudioNode[] = []
+  private kind: NoiseKind = 'off'
+
+  /** 惰性创建 AudioContext（Electron 默认允许无手势自动播放） */
+  private ensure(): AudioContext | null {
+    if (!this.ctx) {
+      try {
+        this.ctx = new AudioContext()
+        this.master = this.ctx.createGain()
+        this.master.gain.value = 0.5
+        this.master.connect(this.ctx.destination)
+      } catch {
+        return null
+      }
+    }
+    if (this.ctx.state === 'suspended') void this.ctx.resume()
+    return this.ctx
+  }
+
+  /** 生成 2 秒循环噪声 buffer：white / pink（保罗·凯尔特）/ brown（随机游走） */
+  private noiseBuffer(ctx: AudioContext, type: 'white' | 'pink' | 'brown'): AudioBuffer {
+    const len = ctx.sampleRate * 2
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate)
+    const d = buf.getChannelData(0)
+    if (type === 'white') {
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1
+    } else if (type === 'pink') {
+      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0
+      for (let i = 0; i < len; i++) {
+        const w = Math.random() * 2 - 1
+        b0 = 0.99886 * b0 + w * 0.0555179
+        b1 = 0.99332 * b1 + w * 0.0750759
+        b2 = 0.96900 * b2 + w * 0.1538520
+        b3 = 0.86650 * b3 + w * 0.3104856
+        b4 = 0.55000 * b4 + w * 0.5329522
+        b5 = -0.7616 * b5 - w * 0.0168980
+        d[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11
+        b6 = w * 0.115926
+      }
+    } else {
+      let last = 0
+      for (let i = 0; i < len; i++) {
+        const w = Math.random() * 2 - 1
+        last = (last + 0.02 * w) / 1.02
+        d[i] = last * 3.5
+      }
+    }
+    return buf
+  }
+
+  /** 播放指定环境音（先停掉旧的） */
+  play(kind: Exclude<NoiseKind, 'off'>, volume: number): void {
+    const ctx = this.ensure()
+    if (!ctx || !this.master) return
+    this.stop()
+    this.kind = kind
+    this.master.gain.value = Math.max(0, Math.min(1, volume))
+
+    const loop = (type: 'white' | 'pink' | 'brown'): AudioBufferSourceNode => {
+      const src = ctx.createBufferSource()
+      src.buffer = this.noiseBuffer(ctx, type)
+      src.loop = true
+      return src
+    }
+    const lowpass = (freq: number): BiquadFilterNode => {
+      const f = ctx.createBiquadFilter()
+      f.type = 'lowpass'
+      f.frequency.value = freq
+      return f
+    }
+    const lfo = (freq: number, depth: number): OscillatorNode => {
+      const o = ctx.createOscillator()
+      o.frequency.value = freq
+      const g = ctx.createGain()
+      g.gain.value = depth
+      o.connect(g)
+      o.start()
+      this.nodes.push(o, g)
+      return g
+    }
+
+    if (kind === 'rain') {
+      // 粉红噪声 + 低通 → 细密雨声
+      const src = loop('pink')
+      const f = lowpass(1400)
+      src.connect(f).connect(this.master)
+      src.start()
+      this.nodes.push(src, f)
+    } else if (kind === 'ocean') {
+      // 布朗噪声 + 低通 + 0.08Hz 涨落 → 海浪
+      const src = loop('brown')
+      const f = lowpass(420)
+      const g = ctx.createGain()
+      g.gain.value = 0.55
+      lfo(0.08, 0.45).connect(g.gain)
+      src.connect(f).connect(g).connect(this.master)
+      src.start()
+      this.nodes.push(src, f, g)
+    } else if (kind === 'fire') {
+      // 粉红噪声 + 低通 + 不规则爆裂调制 → 篝火
+      const src = loop('pink')
+      const f = lowpass(650)
+      const g = ctx.createGain()
+      g.gain.value = 0.7
+      lfo(0.35, 0.3).connect(g.gain)
+      src.connect(f).connect(g).connect(this.master)
+      src.start()
+      this.nodes.push(src, f, g)
+    } else {
+      // 白噪音（高频衰减一点更柔和）
+      const src = loop('white')
+      const f = lowpass(9000)
+      src.connect(f).connect(this.master)
+      src.start()
+      this.nodes.push(src, f)
+    }
+  }
+
+  /** 停止播放并清理节点 */
+  stop(): void {
+    for (const n of this.nodes) {
+      try {
+        if (n instanceof AudioBufferSourceNode || n instanceof OscillatorNode) n.stop()
+        n.disconnect()
+      } catch { /* 已断开忽略 */ }
+    }
+    this.nodes = []
+    this.kind = 'off'
+  }
+
+  /** 调整音量（播放中实时生效） */
+  setVolume(v: number): void {
+    if (this.master) this.master.gain.value = Math.max(0, Math.min(1, v))
+  }
+
+  /** 播放提示音序列（[频率, 时长秒]），用于提醒/完成音效 */
+  playToneSeq(notes: [number, number][]): void {
+    const ctx = this.ensure()
+    if (!ctx) return
+    const t0 = ctx.currentTime + 0.02
+    notes.forEach(([freq, dur], i) => {
+      const t = t0 + i * 0.09
+      const osc = ctx.createOscillator()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      const g = ctx.createGain()
+      g.gain.setValueAtTime(0, t)
+      g.gain.linearRampToValueAtTime(0.16, t + 0.02)
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur)
+      osc.connect(g).connect(ctx.destination)
+      osc.start(t)
+      osc.stop(t + dur + 0.05)
+    })
+  }
+}
+
+/** 全局唯一引擎（组件间共享，避免重复建 AudioContext） */
+let engineSingleton: NoiseEngine | null = null
+function getEngine(): NoiseEngine {
+  if (!engineSingleton) engineSingleton = new NoiseEngine()
+  return engineSingleton
+}
+
+/** HUD 面板四角装饰括号（科幻控制台元素） */
+function HudCorners(): React.ReactElement {
+  const c = 'rgba(110,231,183,0.55)'
+  return (
+    <>
+      <span className="absolute -top-px -left-px w-3.5 h-3.5 border-t-2 border-l-2 rounded-tl-sm" style={{ borderColor: c }} />
+      <span className="absolute -top-px -right-px w-3.5 h-3.5 border-t-2 border-r-2 rounded-tr-sm" style={{ borderColor: c }} />
+      <span className="absolute -bottom-px -left-px w-3.5 h-3.5 border-b-2 border-l-2 rounded-bl-sm" style={{ borderColor: c }} />
+      <span className="absolute -bottom-px -right-px w-3.5 h-3.5 border-b-2 border-r-2 rounded-br-sm" style={{ borderColor: c }} />
+    </>
+  )
+}
+
+/** HUD 面板：毛玻璃 + 四角括号 + 状态灯标题行 + 鼠标跟随光晕（可开关） */
+function HudPanel({ label, right, className, glow = true, children }: {
+  label: string
+  right?: string
+  className?: string
+  glow?: boolean
+  children: React.ReactNode
+}): React.ReactElement {
+  /** 鼠标跟随光晕：把光标位置写入 CSS 变量（radial-gradient 跟随） */
+  const onGlow = (e: React.MouseEvent<HTMLElement>): void => {
+    if (!glow) return
+    const r = e.currentTarget.getBoundingClientRect()
+    e.currentTarget.style.setProperty('--mx', Math.round(e.clientX - r.left) + 'px')
+    e.currentTarget.style.setProperty('--my', Math.round(e.clientY - r.top) + 'px')
+  }
+  return (
+    <section
+      onMouseMove={onGlow}
+      className={(glow ? 'hud-glow ' : '') + 'relative rounded-2xl p-5 ' + (className || '')}
+      style={{
+        background: 'rgba(4,18,14,0.5)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        backdropFilter: 'blur(16px)',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+      }}
+    >
+      <HudCorners />
+      <header className="flex items-center justify-between mb-4 select-none">
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#34d399', boxShadow: '0 0 8px #34d399' }} />
+          <span className="mono text-[11px] font-semibold tracking-[0.2em]" style={{ color: 'rgba(110,231,183,0.9)' }}>
+            {label}
+          </span>
+        </div>
+        {right && (
+          <span className="mono text-[10px] tracking-[0.15em] tabular-nums" style={{ color: 'rgba(236,253,245,0.4)' }}>
+            {right}
+          </span>
+        )}
+      </header>
+      {children}
+    </section>
+  )
+}
+
 /** 专注桌面：全屏覆盖层，白名单软件图标 + 大倒计时，只有点这里的软件才能用 */
 export default function FocusOverlay(): React.ReactElement {
   const [state, setState] = useState<FocusState | null>(null)
@@ -26,6 +296,8 @@ export default function FocusOverlay(): React.ReactElement {
   const [error, setError] = useState('')
   // 今日战况（真实学习数据）
   const [today, setToday] = useState<TodayStats | null>(null)
+  // 近 7 日专注（周一到周日）
+  const [week, setWeek] = useState<WeekDay[] | null>(null)
   // 隐藏的条目（✕ 隐藏 = 专注桌面不显示，白名单锁定规则保留，可显示回来）
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [restoreOpen, setRestoreOpen] = useState(false)
@@ -36,6 +308,23 @@ export default function FocusOverlay(): React.ReactElement {
   // 氛围色（诗词/扫描光带，可自定义）
   const [poemColor, setPoemColor] = useState('#ecfdf5')
   const [colorOpen, setColorOpen] = useState(false)
+
+  // ── v2 新功能状态 ──
+  const [controlOpen, setControlOpen] = useState(false)
+  const [noiseKind, setNoiseKind] = useState<NoiseKind>('off')
+  const [noiseVol, setNoiseVol] = useState(45)
+  const [remindMin, setRemindMin] = useState(45)
+  const [sfxOn, setSfxOn] = useState(true)
+  const [quoteOn, setQuoteOn] = useState(true)
+  const [glowOn, setGlowOn] = useState(true)
+  const [remindShow, setRemindShow] = useState<{ id: number; text: string } | null>(null)
+  const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length))
+  const [tilePulse, setTilePulse] = useState<string | null>(null)
+  const [minPulse, setMinPulse] = useState(0)
+  // 剩余秒数的 ref（提醒轮询用，避免 effect 依赖链）
+  const remainingRef = useRef(0)
+  const lastRemindRef = useRef(0)
+  const wasActiveRef = useRef(false)
 
   /** 可选氛围色 */
   const POEM_COLORS = ['#ecfdf5', '#fbbf24', '#2dd4bf', '#60a5fa', '#a78bfa', '#fb7185']
@@ -58,6 +347,18 @@ export default function FocusOverlay(): React.ReactElement {
     window.lanshan.getFocusOrder().then(setOrderKeys)
     // 氛围色（诗词/扫描光带）
     window.lanshan.getFocusColor().then(c => { if (c) setPoemColor(c) })
+    // v2 偏好设置：环境音 / 提醒 / 音效 / 语录（持久化）
+    window.lanshan.getSettings().then(s => {
+      const kind = s['focus_noise'] as NoiseKind
+      if (kind && kind !== 'off') setNoiseKind(kind)
+      const vol = parseInt(s['focus_noise_vol'] || '', 10)
+      if (!isNaN(vol) && vol >= 0 && vol <= 100) setNoiseVol(vol)
+      const rm = parseInt(s['focus_remind_min'] || '', 10)
+      if (REMIND_OPTIONS.includes(rm)) setRemindMin(rm)
+      if (s['focus_sfx'] === '0') setSfxOn(false)
+      if (s['focus_quote'] === '0') setQuoteOn(false)
+      if (s['focus_glow'] === '0') setGlowOn(false)
+    })
     const unsubscribe = window.lanshan.onFocusTick((tick) => {
       setState(prev => prev ? { ...prev, ...tick } : prev)
     })
@@ -73,18 +374,19 @@ export default function FocusOverlay(): React.ReactElement {
     return () => { unsubscribe(); clearInterval(clock); window.removeEventListener('keydown', onKey) }
   }, [])
 
-  /** 今日战况：挂载时加载一次 + 每 30s 轻量轮询（失败静默，不影响倒计时） */
+  /** 今日战况 + 近 7 日：挂载时加载一次 + 每 30s 轻量轮询（失败静默，不影响倒计时） */
   useEffect(() => {
     let stop = false
     async function load(): Promise<void> {
       try {
         const dateStr = new Date().toLocaleDateString('sv-SE')
-        const [core, stats, settings, total, consec] = await Promise.all([
+        const [core, stats, settings, total, consec, weekStats] = await Promise.all([
           window.lanshan.getCoreSubjects(),
           window.lanshan.getDailyStats(dateStr),
           window.lanshan.getSettings(),
           window.lanshan.getTotalSecondsToday(dateStr),
           window.lanshan.getConsecutiveDays(),
+          window.lanshan.getWeekStats(7),
         ])
         if (stop) return
         setToday({
@@ -99,6 +401,7 @@ export default function FocusOverlay(): React.ReactElement {
             }
           }),
         })
+        setWeek((weekStats || []).map((w: WeekDay) => ({ date: w.date, total: w.total || 0 })))
       } catch { /* 数据失败静默降级 */ }
     }
     void load()
@@ -108,6 +411,12 @@ export default function FocusOverlay(): React.ReactElement {
 
   // 专注完成：庆祝动画全屏展示
   const finished = state !== null && !state.active
+
+  // 同步剩余秒到 ref（提醒轮询用）
+  useEffect(() => {
+    remainingRef.current = state?.remainingSec ?? 0
+    wasActiveRef.current = state?.active ?? false
+  }, [state])
 
   /** 完成庆祝粒子（一次性生成，刷新不重来） */
   const particles = useMemo(() => {
@@ -123,6 +432,65 @@ export default function FocusOverlay(): React.ReactElement {
     }))
   }, [])
 
+  // ── 环境音：类型变化时播放/停止，音量实时生效 ──
+  useEffect(() => {
+    if (noiseKind === 'off') {
+      getEngine().stop()
+    } else {
+      getEngine().play(noiseKind, noiseVol / 100)
+    }
+    // 卸载时停止
+    return () => { if (noiseKind !== 'off') getEngine().stop() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noiseKind])
+
+  useEffect(() => {
+    getEngine().setVolume(noiseVol / 100)
+  }, [noiseVol])
+
+  // ── 休息提醒：专注中每 remindMin 分钟弹气泡 + 提示音 ──
+  useEffect(() => {
+    if (!state?.active || remindMin <= 0) return
+    const t = setInterval(() => {
+      const total = state.durationMin * 60
+      const elapsedMin = Math.max(0, Math.floor((total - remainingRef.current) / 60))
+      if (elapsedMin > 0 && elapsedMin % remindMin === 0 && elapsedMin !== lastRemindRef.current) {
+        lastRemindRef.current = elapsedMin
+        const idx = Math.floor(elapsedMin / remindMin - 1) % REMIND_TEXTS.length
+        setRemindShow({ id: Date.now(), text: REMIND_TEXTS[idx] })
+        if (sfxOn) getEngine().playToneSeq([[880, 0.08], [660, 0.12]])
+      }
+    }, 5000)
+    return () => clearInterval(t)
+  }, [state?.active, remindMin, sfxOn, state?.durationMin])
+
+  // 提醒气泡 5 秒后自动消失
+  useEffect(() => {
+    if (!remindShow) return
+    const t = setTimeout(() => setRemindShow(null), 5000)
+    return () => clearTimeout(t)
+  }, [remindShow])
+
+  // ── 专注完成：播放完成音效（从 active→finished 的瞬间） ──
+  useEffect(() => {
+    if (finished && wasActiveRef.current && sfxOn) {
+      getEngine().playToneSeq([[523.25, 0.16], [659.25, 0.16], [783.99, 0.32]])
+    }
+  }, [finished, sfxOn])
+
+  // ── 激励语录：每 3 分钟轮换一句 ──
+  useEffect(() => {
+    if (!quoteOn) return
+    const t = setInterval(() => setQuoteIdx(i => (i + 1) % QUOTES.length), 3 * 60_000)
+    return () => clearInterval(t)
+  }, [quoteOn])
+
+  // ── 倒计时整分钟：环辉光脉冲 ──
+  useEffect(() => {
+    const r = state?.remainingSec ?? 0
+    if (state?.active && r > 0 && r % 60 === 0) setMinPulse(p => p + 1)
+  }, [state?.remainingSec, state?.active])
+
   function tileLabel(a: FocusApp): string {
     // 优先显示窗口名（锁窗口时记录的标题）；没有窗口标题才显示进程名
     if (a.title === '澜山') return '澜山'
@@ -132,6 +500,8 @@ export default function FocusOverlay(): React.ReactElement {
 
   async function launch(a: FocusApp): Promise<void> {
     // 按「进程名 + 关键词」精确跳转到对应窗口（避免切到不匹配窗口被盖回）
+    setTilePulse(focusEntryKey(a))
+    setTimeout(() => setTilePulse(null), 500)
     await window.lanshan.launchFocusApp(a.name, a.titleMatch)
   }
 
@@ -215,6 +585,24 @@ export default function FocusOverlay(): React.ReactElement {
     }
   }
 
+  /** 环境音开关（顶部栏快捷按钮） */
+  function toggleNoise(): void {
+    const next: NoiseKind = noiseKind === 'off' ? 'rain' : 'off'
+    setNoiseKind(next)
+    window.lanshan.setSetting('focus_noise', next)
+  }
+
+  function pickNoise(kind: Exclude<NoiseKind, 'off'>): void {
+    setNoiseKind(kind)
+    window.lanshan.setSetting('focus_noise', kind)
+  }
+
+  function pickRemind(min: number): void {
+    setRemindMin(min)
+    lastRemindRef.current = 0
+    window.lanshan.setSetting('focus_remind_min', min)
+  }
+
   const dateText = new Date(now).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })
   const timeText = new Date(now).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })
   const whitelist = state?.whitelist || []
@@ -224,6 +612,10 @@ export default function FocusOverlay(): React.ReactElement {
   // 按用户拖拽的自定义顺序排列
   const orderedWhitelist = sortWhitelistByOrder(visibleWhitelist, orderKeys)
   const elapsedMin = state ? Math.max(0, state.durationMin - Math.ceil((state.remainingSec || 0) / 60)) : 0
+  // 精确到秒的进度（燃料条用）
+  const totalSec = Math.max(1, (state?.durationMin ?? 0) * 60)
+  const elapsedSec = Math.max(0, totalSec - (state?.remainingSec ?? 0))
+  const progressPct = Math.min(1, elapsedSec / totalSec)
 
   return (
     <div
@@ -234,7 +626,7 @@ export default function FocusOverlay(): React.ReactElement {
         transition: 'background 0.6s ease',
       }}
     >
-      {/* 动态背景：漂移光斑 + 科技网格 + 暗角（颜色跟随主题） */}
+      {/* 动态背景：漂移光斑 + 科技网格 + 扫描线 + 暗角（颜色跟随主题） */}
       <div
         className="focus-blob -top-[12vw] -left-[8vw]"
         style={{ width: '46vw', height: '46vw', background: poemColor + '33', animation: 'focus-blob-1 26s ease-in-out infinite' }}
@@ -255,108 +647,155 @@ export default function FocusOverlay(): React.ReactElement {
           backgroundSize: '44px 44px',
         }}
       />
+      {/* 全屏扫描线（HUD 动态感） */}
+      <div className="scanline" />
       {/* 暗角 */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{ background: 'radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.28) 100%)' }}
       />
 
-      {/* 顶部栏 */}
-      <div className="relative z-10 flex items-center justify-between px-10 pt-7 select-none">
-        <div className="flex items-center gap-2.5">
-          <span className="text-lg">🍅</span>
-          <span className="text-sm font-semibold tracking-widest" style={{ color: 'rgba(236,253,245,0.92)' }}>专注中</span>
+      {/* 顶部栏：状态灯 + 系统名 + 时钟读数 + 控制入口 */}
+      <header className="relative z-10 flex items-center justify-between px-10 pt-7 pb-4 select-none">
+        <div className="flex items-center gap-3">
+          <span className="w-2 h-2 rounded-full focus-ping" style={{ background: '#34d399' }} />
+          <span className="mono text-sm font-bold tracking-[0.28em]" style={{ color: 'rgba(236,253,245,0.92)' }}>
+            澜山 · FOCUS
+          </span>
+          <span
+            className="mono text-[10px] px-2 py-0.5 rounded border tracking-[0.2em] hidden sm:block"
+            style={{ color: 'rgba(110,231,183,0.85)', borderColor: 'rgba(110,231,183,0.35)', background: 'rgba(52,211,153,0.08)' }}
+          >
+            专注中 · LIVE
+          </span>
         </div>
-        <div className="relative flex items-center gap-4">
-          <p className="text-xs" style={{ color: 'rgba(236,253,245,0.45)' }}>↕ 拖动下方图标可自定义顺序</p>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="mono tabular-nums text-lg font-semibold"
+              style={{ color: 'rgba(236,253,245,0.92)', textShadow: '0 0 18px rgba(52,211,153,0.35)' }}
+            >
+              {timeText}
+            </span>
+            <span className="text-xs" style={{ color: 'rgba(236,253,245,0.5)' }}>{dateText}</span>
+          </div>
+          <p className="hidden xl:block text-xs" style={{ color: 'rgba(236,253,245,0.45)' }}>
+            ↕ 拖动图标可自定义顺序
+          </p>
+          {/* 环境音快捷开关 */}
+          <button
+            onClick={toggleNoise}
+            className="relative w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all border"
+            title={noiseKind === 'off' ? '开启环境音（雨声）' : '关闭环境音'}
+            style={{
+              borderColor: noiseKind === 'off' ? 'rgba(255,255,255,0.12)' : 'rgba(52,211,153,0.5)',
+              background: noiseKind === 'off' ? 'transparent' : 'rgba(52,211,153,0.12)',
+            }}
+          >
+            {noiseKind === 'off' ? '🔇' : '🔊'}
+            {noiseKind !== 'off' && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full sound-ping" style={{ background: '#34d399' }} />
+            )}
+          </button>
+          {/* 控制中心 */}
+          <button
+            onClick={() => setControlOpen(v => !v)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all border hover:bg-white/10"
+            style={{
+              borderColor: controlOpen ? 'rgba(52,211,153,0.5)' : 'rgba(255,255,255,0.12)',
+              background: controlOpen ? 'rgba(52,211,153,0.12)' : 'transparent',
+            }}
+            title="控制中心（环境音 / 提醒 / 音效）"
+          >
+            ⚙️
+          </button>
           <button
             onClick={() => setColorOpen(v => !v)}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all hover:bg-white/10"
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all border hover:bg-white/10"
+            style={{ borderColor: 'rgba(255,255,255,0.12)' }}
             title="自定义背景颜色"
           >
             🎨
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* 主体：时钟 + 倒计时 + 今日战况 + 白名单图标 */}
-      <div className="relative z-10 flex-1 flex min-h-0">
-        {/* 中央：时钟 + 倒计时 + 今日战况 + 白名单图标（内容不超高时完美居中，超高时贴顶可滚动） */}
-        <div className="flex-1 min-w-0 min-h-0 overflow-y-auto">
-          <div className="min-h-full flex flex-col items-center justify-center px-6 select-none py-3">
-          {finished ? (
-            <>
-              <div className="text-7xl mb-4" style={{ animation: 'focus-breathe 2.2s ease-in-out infinite' }}>🎉</div>
-              <div className="text-3xl font-bold">专注完成！</div>
-              <p className="mt-2 text-base" style={{ color: 'rgba(236,253,245,0.7)' }}>
-                本次共专注 {state.durationMin} 分钟
+      {/* 主体：左栏任务倒计时/今日战况 + 右栏软件启动器 */}
+      {finished ? (
+        <main className="relative z-10 flex-1 min-h-0 flex items-center justify-center px-6 pb-12">
+          <HudPanel label="MISSION COMPLETE · 任务完成" glow={glowOn} className="w-full max-w-xl">
+            <div className="text-center">
+              <div className="text-6xl mb-4" style={{ animation: 'focus-breathe 2.2s ease-in-out infinite' }}>🎉</div>
+              <p className="mono text-xl font-bold tracking-widest">专注完成！</p>
+              <p className="mt-2 text-sm" style={{ color: 'rgba(236,253,245,0.7)' }}>
+                本次共专注 {state?.durationMin ?? 0} 分钟 · 保持这个节奏，继续加油
               </p>
-              <TodayBoard today={today} />
-            </>
-          ) : (
-            <>
-              {/* 时钟（居中，倒计时上方） */}
-              <div className="shrink-0 flex items-center gap-3 mb-6">
-                <span
-                  className="tabular-nums text-2xl font-semibold"
-                  style={{ color: 'rgba(236,253,245,0.92)', textShadow: '0 0 20px rgba(52,211,153,0.35)' }}
-                >
-                  {timeText}
-                </span>
-                <span className="text-base" style={{ color: 'rgba(236,253,245,0.55)' }}>{dateText}</span>
+              <div className="mt-8 text-left">
+                <TodayBoard today={today} />
               </div>
-              {/* 环形倒计时：渐变描边 + 发光，每秒平滑推进 */}
-              <div className="relative shrink-0" style={{ width: 300, height: 300 }}>
-                <CountdownRing remainingSec={state?.remainingSec ?? 0} durationMin={state?.durationMin ?? 0} />
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <div
-                    className="focus-breathe tabular-nums font-bold tracking-tight"
-                    style={{
-                      fontSize: '4.8rem',
-                      lineHeight: 1,
-                      background: 'linear-gradient(180deg, #f0fdfa 25%, #6ee7b7 95%)',
-                      WebkitBackgroundClip: 'text',
-                      WebkitTextFillColor: 'transparent',
-                      filter: 'drop-shadow(0 0 26px rgba(52,211,153,0.4))',
-                    }}
-                  >
-                    {formatCountdown(state?.remainingSec ?? 0)}
+            </div>
+          </HudPanel>
+        </main>
+      ) : (
+        <main className="relative z-10 flex-1 min-h-0 flex flex-col xl:flex-row gap-6 px-8 lg:px-10 pb-8 overflow-y-auto xl:overflow-hidden">
+          {/* 左栏：任务倒计时 + 今日使用情况（3:4 宽高比，两面板平分高度，内容垂直居中） */}
+          <div className="xl:w-[560px] shrink-0 flex flex-col gap-6 min-h-0 xl:overflow-y-auto hud-scroll xl:pr-1.5">
+            <HudPanel label="TIMER · 任务倒计时" right={`TARGET ${state?.durationMin ?? 0} MIN`} glow={glowOn} className="flex-1 min-h-0 flex flex-col">
+              <div className="h-full flex flex-col justify-center">
+                <CountdownRing key={minPulse} remainingSec={state?.remainingSec ?? 0} durationMin={state?.durationMin ?? 0} pulse={minPulse > 0} />
+                <FuelGauge pct={progressPct} elapsedMin={elapsedMin} totalMin={state?.durationMin ?? 0} appCount={whitelist.length} />
+              </div>
+            </HudPanel>
+            {/* 今日使用情况：数字与科目固定、7日图弹性自适应（90~220px，比例真实不拉长） */}
+            <HudPanel label="MISSION · 今日使用情况" right="30S 刷新" glow={glowOn} className="flex-1 min-h-0 flex flex-col">
+              <div className="h-full flex flex-col justify-center gap-4">
+                <div className="shrink-0">
+                  <TodayStatsRow today={today} />
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col justify-center">
+                  <WeekBars week={week} />
+                </div>
+                <div className="shrink-0">
+                  <SubjectProgress subjects={today?.subjects || []} />
+                </div>
+              </div>
+            </HudPanel>
+          </div>
+
+          {/* 右栏：软件启动器（白名单图标，可拖拽排序） */}
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+            <HudPanel label="LAUNCHER · 软件启动器" right={`${whitelist.length} APPS`} className="flex-1 min-h-0 flex flex-col">
+              <div className="flex-1 min-h-0 overflow-y-auto hud-scroll pr-1.5">
+                {orderedWhitelist.length === 0 ? (
+                  <div className="h-full flex items-center justify-center">
+                    <p className="text-xs" style={{ color: 'rgba(236,253,245,0.4)' }}>
+                      白名单为空（开始专注时会自动加入澜山）
+                    </p>
                   </div>
-                  <p className="text-base mt-2.5" style={{ color: 'rgba(236,253,245,0.6)' }}>
-                    剩余时间 · 点击下方图标使用软件
-                  </p>
-                </div>
-              </div>
-              <p className="shrink-0 text-base mt-4 tabular-nums" style={{ color: 'rgba(236,253,245,0.55)' }}>
-                已专注 {elapsedMin} / {state?.durationMin ?? 0} 分钟 · 白名单 {whitelist.length} 个软件
-              </p>
-
-              {/* 今日战况：真实学习数据（30s 刷新） */}
-              <TodayBoard today={today} />
-
-              {/* 白名单图标：一字排开，5 个一排（悬停 ✕ 隐藏 + 拖拽排序） */}
-              <div className="shrink-0 mt-20 w-full max-w-4xl">
-                <div className="grid grid-cols-5 gap-6">
-                  {orderedWhitelist.map(a => {
-                    const key = focusEntryKey(a)
-                    return (
-                      <AppTile
-                        key={key}
-                        label={tileLabel(a)}
-                        icon={icons[a.name.toLowerCase()]}
-                        onLaunch={() => launch(a)}
-                        onRemove={() => hideEntry(a)}
-                        draggable
-                        isDragging={dragKey === key}
-                        isDragOver={dragOverKey === key}
-                        onDragStart={(e) => startDrag(e, key)}
-                        onDragOver={(e) => { e.preventDefault(); if (dragOverKey !== key) setDragOverKey(key) }}
-                        onDrop={(e) => dropOn(key, e)}
-                        onDragEnd={endDrag}
-                      />
-                    )
-                  })}
-                </div>
+                  ) : (
+                    <div className="flex flex-wrap justify-start gap-4">
+                    {orderedWhitelist.map(a => {
+                      const key = focusEntryKey(a)
+                      return (
+                        <AppTile
+                          key={key}
+                          label={tileLabel(a)}
+                          icon={icons[a.name.toLowerCase()]}
+                          pulsing={tilePulse === key}
+                          onLaunch={() => launch(a)}
+                          onRemove={() => hideEntry(a)}
+                          draggable
+                          isDragging={dragKey === key}
+                          isDragOver={dragOverKey === key}
+                          onDragStart={(e) => startDrag(e, key)}
+                          onDragOver={(e) => { e.preventDefault(); if (dragOverKey !== key) setDragOverKey(key) }}
+                          onDrop={(e) => dropOn(key, e)}
+                          onDragEnd={endDrag}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
                 {hiddenEntries.length > 0 && (
                   <div className="flex justify-center mt-5">
                     <button
@@ -369,20 +808,52 @@ export default function FocusOverlay(): React.ReactElement {
                   </div>
                 )}
               </div>
-            </>
-          )}
-        </div>
-        </div>
+            </HudPanel>
+          </div>
+        </main>
+      )}
 
-      </div>
+      {/* 激励语录（左下角，淡入轮换） */}
+      {quoteOn && !finished && (
+        <div key={quoteIdx} className="quote-fade absolute bottom-7 left-8 z-20 select-none max-w-md pointer-events-none">
+          <p className="text-xs leading-relaxed" style={{ color: 'rgba(236,253,245,0.5)' }}>
+            ✦ {QUOTES[quoteIdx]}
+          </p>
+        </div>
+      )}
 
-      {/* 背景颜色选择面板（最外层直接子元素：层级最高，不会被任何图层覆盖） */}
+      {/* 休息提醒气泡 */}
+      {remindShow && (
+        <div className="absolute inset-x-0 bottom-28 z-30 flex justify-center pointer-events-none">
+          <div
+            key={remindShow.id}
+            className="remind-pop px-6 py-3.5 rounded-2xl"
+            style={{
+              background: 'rgba(4,18,14,0.94)',
+              border: '1px solid rgba(52,211,153,0.4)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.45), 0 0 24px rgba(52,211,153,0.12)',
+            }}
+          >
+            <p className="text-sm font-medium" style={{ color: 'rgba(236,253,245,0.92)' }}>{remindShow.text}</p>
+          </div>
+        </div>
+      )}
+
+      {/* 背景颜色选择面板 */}
       {colorOpen && (
         <div
-          className="fixed right-10 top-16 rounded-2xl p-3 z-[100]"
-          style={{ background: 'rgba(8,32,28,0.94)', backdropFilter: 'blur(14px)', boxShadow: '0 16px 48px rgba(0,0,0,0.5)' }}
+          className="fixed right-10 top-20 rounded-xl p-3.5 z-[100]"
+          style={{
+            background: 'rgba(4,18,14,0.92)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            backdropFilter: 'blur(14px)',
+            boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+          }}
         >
-          <p className="text-[11px] mb-2 px-0.5" style={{ color: 'rgba(236,253,245,0.5)' }}>背景颜色</p>
+          <HudCorners />
+          <p className="mono text-[10px] tracking-[0.2em] mb-2.5 px-0.5" style={{ color: 'rgba(236,253,245,0.5)' }}>
+            BG THEME · 背景色
+          </p>
           <div className="flex gap-2">
             {POEM_COLORS.map(c => (
               <button
@@ -402,24 +873,142 @@ export default function FocusOverlay(): React.ReactElement {
         </div>
       )}
 
+      {/* 控制中心：环境音 / 休息提醒 / 音效 / 语录 */}
+      {controlOpen && (
+        <div
+          className="fixed right-10 top-20 w-[300px] rounded-xl p-4 z-[100]"
+          style={{
+            background: 'rgba(4,18,14,0.94)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            backdropFilter: 'blur(14px)',
+            boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+          }}
+        >
+          <HudCorners />
+          <div className="flex items-center justify-between mb-3">
+            <span className="mono text-[11px] font-semibold tracking-[0.2em]" style={{ color: 'rgba(110,231,183,0.9)' }}>
+              CONTROL · 控制中心
+            </span>
+            <button
+              onClick={() => setControlOpen(false)}
+              className="w-6 h-6 rounded-full flex items-center justify-center text-xs transition-all hover:bg-white/10"
+              style={{ color: 'rgba(236,253,245,0.6)' }}
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* 环境音 */}
+          <p className="mono text-[10px] tracking-[0.18em] mb-2" style={{ color: 'rgba(236,253,245,0.45)' }}>
+            🎵 环境音 AMBIENCE
+          </p>
+          <div className="flex gap-1.5 mb-3">
+            {NOISE_OPTIONS.map(o => (
+              <button key={o.kind} onClick={() => pickNoise(o.kind)} className={`cyber-seg ${noiseKind === o.kind ? 'on' : ''}`}>
+                {o.icon} {o.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2.5 mb-4">
+            {/* 播放中的均衡器跳动 */}
+            <div className="flex items-end gap-[3px] h-4" style={{ opacity: noiseKind === 'off' ? 0.25 : 1 }}>
+              <span className="eq-bar h-full" style={{ animationDelay: '0s' }} />
+              <span className="eq-bar h-full" style={{ animationDelay: '0.2s' }} />
+              <span className="eq-bar h-full" style={{ animationDelay: '0.4s' }} />
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={noiseVol}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10)
+                setNoiseVol(v)
+                window.lanshan.setSetting('focus_noise_vol', v)
+              }}
+              className="cyber-slider flex-1"
+              title="音量"
+            />
+            <span className="mono text-[10px] tabular-nums w-8 text-right" style={{ color: 'rgba(236,253,245,0.5)' }}>
+              {noiseVol}%
+            </span>
+          </div>
+
+          {/* 休息提醒 */}
+          <p className="mono text-[10px] tracking-[0.18em] mb-2" style={{ color: 'rgba(236,253,245,0.45)' }}>
+            💧 休息提醒 REMIND
+          </p>
+          <div className="flex gap-1.5 mb-4">
+            {REMIND_OPTIONS.map(m => (
+              <button key={m} onClick={() => pickRemind(m)} className={`cyber-seg ${remindMin === m ? 'on' : ''}`}>
+                {m === 0 ? '关闭' : `${m} 分`}
+              </button>
+            ))}
+          </div>
+
+          {/* 音效 / 语录 / 光效开关 */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs" style={{ color: 'rgba(236,253,245,0.75)' }}>🖱 鼠标光效</span>
+              <button
+                onClick={() => {
+                  setGlowOn(v => {
+                    window.lanshan.setSetting('focus_glow', !v ? 1 : 0)
+                    return !v
+                  })
+                }}
+                className={`cyber-toggle ${glowOn ? 'on' : ''}`}
+                title="面板上跟随鼠标的光晕"
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs" style={{ color: 'rgba(236,253,245,0.75)' }}>🔔 提示音效</span>
+              <button
+                onClick={() => {
+                  setSfxOn(v => {
+                    window.lanshan.setSetting('focus_sfx', !v ? 1 : 0)
+                    return !v
+                  })
+                }}
+                className={`cyber-toggle ${sfxOn ? 'on' : ''}`}
+                title="提醒/完成提示音"
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs" style={{ color: 'rgba(236,253,245,0.75)' }}>✨ 激励语录</span>
+              <button
+                onClick={() => {
+                  setQuoteOn(v => {
+                    window.lanshan.setSetting('focus_quote', !v ? 1 : 0)
+                    return !v
+                  })
+                }}
+                className={`cyber-toggle ${quoteOn ? 'on' : ''}`}
+                title="左下角语录轮换"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 右下角悬浮操作按钮（无底部栏，界面更通透） */}
       {error && (
         <div className="absolute bottom-16 right-8 z-20 text-xs select-none" style={{ color: '#fca5a5' }}>
           ⚠ {error}
         </div>
       )}
-      <div className="absolute bottom-6 right-8 z-20 flex items-center gap-3 select-none">
+      <div className="absolute bottom-7 right-8 z-20 flex items-center gap-3 select-none">
         <button
           onClick={quitApp}
-          className="px-4 py-2 rounded-xl text-xs font-medium transition-all hover:bg-white/10"
-          style={{ color: 'rgba(236,253,245,0.75)' }}
+          className="px-4 py-2 rounded-xl text-xs font-medium transition-all border hover:bg-white/10"
+          style={{ borderColor: 'rgba(255,255,255,0.12)', color: 'rgba(236,253,245,0.75)' }}
         >
           退出应用
         </button>
         <button
           onClick={endFocus}
-          className="px-5 py-2 rounded-xl text-xs font-semibold transition-all hover:bg-white/20"
-          style={{ background: 'rgba(239,68,68,0.85)', color: 'white', boxShadow: '0 4px 16px rgba(239,68,68,0.3)' }}
+          className="px-6 py-2.5 rounded-xl text-xs font-bold tracking-wider transition-all hover:brightness-110"
+          style={{ background: 'linear-gradient(135deg, #f87171, #dc2626)', color: 'white', boxShadow: '0 4px 20px rgba(239,68,68,0.4)' }}
         >
           ⏹ 结束专注
         </button>
@@ -427,14 +1016,25 @@ export default function FocusOverlay(): React.ReactElement {
 
       {/* 显示回来面板：隐藏的软件可恢复显示 */}
       {restoreOpen && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.45)' }} onClick={() => setRestoreOpen(false)}>
+        <div
+          className="fixed inset-0 z-30 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}
+          onClick={() => setRestoreOpen(false)}
+        >
           <div
-            className="rounded-3xl w-[420px] max-h-[70vh] overflow-y-auto p-5"
-            style={{ background: '#0c211c', boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}
+            className="relative rounded-2xl w-[420px] max-h-[70vh] overflow-y-auto hud-scroll p-5"
+            style={{
+              background: 'rgba(4,18,14,0.95)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              boxShadow: '0 24px 64px rgba(0,0,0,0.55)',
+            }}
             onClick={(e) => e.stopPropagation()}
           >
+            <HudCorners />
             <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-semibold" style={{ color: 'rgba(236,253,245,0.9)' }}>↩ 显示回来</span>
+              <span className="mono text-sm font-semibold tracking-[0.15em]" style={{ color: 'rgba(236,253,245,0.9)' }}>
+                RESTORE · 显示回来
+              </span>
               <button
                 onClick={() => setRestoreOpen(false)}
                 className="w-6 h-6 rounded-full flex items-center justify-center text-xs transition-all hover:bg-white/10"
@@ -443,7 +1043,7 @@ export default function FocusOverlay(): React.ReactElement {
                 ✕
               </button>
             </div>
-            <p className="text-[11px] mb-3" style={{ color: 'rgba(236,253,245,0.45)' }}>
+            <p className="mono text-[10px] tracking-wider mb-3" style={{ color: 'rgba(236,253,245,0.45)' }}>
               被隐藏的软件（白名单锁定规则一直保留），点选即可重新显示
             </p>
             <div className="space-y-1.5">
@@ -458,7 +1058,7 @@ export default function FocusOverlay(): React.ReactElement {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm truncate" style={{ color: 'rgba(236,253,245,0.9)' }}>{tileLabel(a)}</p>
                   </div>
-                  <span className="text-xs flex-shrink-0" style={{ color: '#34d399' }}>显示</span>
+                  <span className="mono text-xs flex-shrink-0" style={{ color: '#34d399' }}>显示</span>
                 </button>
               ))}
               {hiddenEntries.length === 0 && (
@@ -493,104 +1093,241 @@ export default function FocusOverlay(): React.ReactElement {
   )
 }
 
-/** 环形倒计时：渐变描边 + 发光，进度 = 已过时长/总时长，每秒平滑推进 */
-function CountdownRing({ remainingSec, durationMin }: { remainingSec: number; durationMin: number }): React.ReactElement {
+/** 环形倒计时：外圈刻度 + 渐变描边 + 发光，进度 = 已过时长/总时长，每秒平滑推进。
+ *  pulse：整分钟时以正方形环容器为中心做正圆辉光扩散 */
+function CountdownRing({ remainingSec, durationMin, pulse }: { remainingSec: number; durationMin: number; pulse?: boolean }): React.ReactElement {
   const total = Math.max(1, durationMin * 60)
   const elapsed = Math.max(0, total - remainingSec)
   const pct = Math.min(1, elapsed / total)
-  const R = 138
+  const R = 126
   const C = 2 * Math.PI * R
   return (
-    <svg width="100%" height="100%" viewBox="0 0 300 300" className="-rotate-90">
-      <defs>
-        <linearGradient id="focusRingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#34d399" />
-          <stop offset="100%" stopColor="#14b8a6" />
-        </linearGradient>
-      </defs>
-      <circle cx="150" cy="150" r={R} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="9" />
-      {/* 内圈装饰细环 */}
-      <circle cx="150" cy="150" r="106" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="1" strokeDasharray="3 7" />
-      <circle
-        cx="150" cy="150" r={R}
-        fill="none"
-        stroke="url(#focusRingGrad)"
-        strokeWidth="9"
-        strokeLinecap="round"
-        strokeDasharray={C}
-        strokeDashoffset={C * (1 - pct)}
-        style={{ transition: 'stroke-dashoffset 1s linear', filter: 'drop-shadow(0 0 10px rgba(52,211,153,0.55))' }}
-      />
-    </svg>
+    <div
+      className={'relative mx-auto' + (pulse ? ' ring-pulse' : '')}
+      style={{ width: 'clamp(290px, 14vw, 380px)', height: 'clamp(290px, 14vw, 380px)' }}
+    >
+      <svg width="100%" height="100%" viewBox="0 0 300 300" className="-rotate-90">
+        <defs>
+          <linearGradient id="focusRingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#34d399" />
+            <stop offset="100%" stopColor="#14b8a6" />
+          </linearGradient>
+        </defs>
+        {/* 外圈 60 格刻度（整 5 分钟为长刻度） */}
+        {Array.from({ length: 60 }, (_, i) => (
+          <line
+            key={i}
+            x1="150"
+            y1="10"
+            x2="150"
+            y2={i % 5 === 0 ? 24 : 18}
+            stroke={i % 5 === 0 ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.10)'}
+            strokeWidth={i % 5 === 0 ? 2 : 1}
+            transform={`rotate(${i * 6} 150 150)`}
+          />
+        ))}
+        <circle cx="150" cy="150" r={R} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="9" />
+        {/* 内圈装饰细环 */}
+        <circle cx="150" cy="150" r="104" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" strokeDasharray="3 8" />
+        <circle
+          cx="150" cy="150" r={R}
+          fill="none"
+          stroke="url(#focusRingGrad)"
+          strokeWidth="9"
+          strokeLinecap="round"
+          strokeDasharray={C}
+          strokeDashoffset={C * (1 - pct)}
+          style={{ transition: 'stroke-dashoffset 1s linear', filter: 'drop-shadow(0 0 10px rgba(52,211,153,0.55))' }}
+        />
+      </svg>
+      {/* 中心：REMAINING 读数 + 大倒计时 */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="mono text-[10px] tracking-[0.3em] mb-1" style={{ color: 'rgba(236,253,245,0.45)' }}>
+          REMAINING · 剩余
+        </span>
+        <div
+          className="focus-breathe mono tabular-nums font-bold tracking-tight"
+          style={{
+            fontSize: 'clamp(3.4rem, 3vw, 4.8rem)',
+            lineHeight: 1.05,
+            background: 'linear-gradient(180deg, #f0fdfa 25%, #6ee7b7 95%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            filter: 'drop-shadow(0 0 26px rgba(52,211,153,0.4))',
+          }}
+        >
+          {formatCountdown(remainingSec)}
+        </div>
+        <span className="text-xs mt-2" style={{ color: 'rgba(236,253,245,0.55)' }}>
+          点击图标使用软件
+        </span>
+      </div>
+    </div>
   )
 }
 
-/** 今日战况：无容器纯排版（数字 + 分隔线 + 科目进度条），不做任何包裹卡片 */
+/** 已专注进度燃料条：分段点亮 + 数据芯片 */
+function FuelGauge({ pct, elapsedMin, totalMin, appCount }: {
+  pct: number
+  elapsedMin: number
+  totalMin: number
+  appCount: number
+}): React.ReactElement {
+  const lit = Math.round(pct * GAUGE_SEGMENTS)
+  return (
+    <div className="mt-6 select-none">
+      <div className="flex items-center justify-between mb-2">
+        <span className="mono text-[10px] tracking-[0.2em]" style={{ color: 'rgba(236,253,245,0.45)' }}>
+          FOCUS ELAPSED · 已专注
+        </span>
+        <span className="mono text-[11px] tabular-nums" style={{ color: 'rgba(236,253,245,0.75)' }}>
+          {elapsedMin}<span className="opacity-40 mx-0.5">/</span>{totalMin} MIN
+        </span>
+      </div>
+      <div className="flex gap-1">
+        {Array.from({ length: GAUGE_SEGMENTS }, (_, i) => (
+          <span
+            key={i}
+            className="h-1.5 flex-1 rounded-full transition-all duration-700"
+            style={i < lit
+              ? { background: 'linear-gradient(90deg, #10b981, #34d399)', boxShadow: '0 0 6px rgba(52,211,153,0.5)' }
+              : { background: 'rgba(255,255,255,0.08)' }}
+          />
+        ))}
+      </div>
+      <div className="flex items-center gap-2 mt-3">
+        <span className="mono text-[10px] px-2 py-0.5 rounded-md tracking-wider" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(236,253,245,0.6)' }}>
+          ⚡ 白名单 {appCount} 个软件
+        </span>
+        <span className="mono text-[10px] px-2 py-0.5 rounded-md tracking-wider" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(236,253,245,0.6)' }}>
+          🎯 目标 {totalMin} 分钟
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/** 今日使用情况数字读数（今日使用 + 连续打卡） */
+function TodayStatsRow({ today }: { today: TodayStats | null }): React.ReactElement {
+  if (!today) return <div className="h-16" />
+  return (
+    <div className="grid grid-cols-2 gap-4">
+      <div>
+        <p className="mono text-[10px] tracking-[0.18em]" style={{ color: 'rgba(236,253,245,0.45)' }}>📖 今日使用</p>
+        <p
+          className="mono tabular-nums text-4xl font-bold mt-1.5"
+          style={{ color: 'rgba(236,253,245,0.95)', textShadow: '0 0 16px rgba(52,211,153,0.3)' }}
+        >
+          {formatDuration(today.totalSeconds)}
+        </p>
+      </div>
+      <div>
+        <p className="mono text-[10px] tracking-[0.18em]" style={{ color: 'rgba(236,253,245,0.45)' }}>🔥 连续打卡</p>
+        <p
+          className="mono tabular-nums text-4xl font-bold mt-1.5"
+          style={{ color: 'rgba(236,253,245,0.95)', textShadow: '0 0 16px rgba(251,191,36,0.25)' }}
+        >
+          {today.consecutive}
+          <span className="text-xl font-semibold ml-1.5" style={{ color: 'rgba(236,253,245,0.6)' }}>天</span>
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/** 科目目标进度条 */
+function SubjectProgress({ subjects }: { subjects: TodayStats['subjects'] }): React.ReactElement {
+  return (
+    <div className="space-y-3.5">
+      {subjects.map(s => {
+        const pct = s.target > 0 ? Math.min(100, (s.seconds / s.target) * 100) : 0
+        const done = s.seconds >= s.target
+        const color = getSubjectColor(s.subject)
+        return (
+          <div key={s.subject}>
+            <div className="flex items-center justify-between text-sm mb-2">
+              <span className="flex items-center min-w-0" style={{ color: 'rgba(236,253,245,0.85)' }}>
+                <span
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-xs mr-2 flex-shrink-0"
+                  style={{ background: color + '26' }}
+                >
+                  {getSubjectIcon(s.subject)}
+                </span>
+                <span className="truncate">{s.subject} {done && <span style={{ color: '#34d399' }}>✓</span>}</span>
+              </span>
+              <span className="mono tabular-nums flex-shrink-0 ml-2 text-xs" style={{ color: 'rgba(236,253,245,0.5)' }}>
+                {formatDuration(s.seconds)}
+                <span className="ml-2 font-semibold" style={{ color: done ? '#34d399' : color }}>
+                  {Math.round(pct)}%
+                </span>
+              </span>
+            </div>
+            <div className="h-2.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+              <div
+                className="h-full rounded-full transition-all duration-700"
+                style={{
+                  width: `${pct}%`,
+                  background: done
+                    ? 'linear-gradient(90deg, #10b981, #34d399)'
+                    : `linear-gradient(90deg, ${color}bb, ${color})`,
+                  boxShadow: `0 0 10px ${done ? 'rgba(52,211,153,0.6)' : color + '55'}`,
+                }}
+              />
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** 今日战况组合（完成态面板用） */
 function TodayBoard({ today }: { today: TodayStats | null }): React.ReactElement {
   if (!today) {
     // 数据未加载时的占位（透明，不闪跳）
-    return (
-      <div className="shrink-0 mt-8" style={{ width: 'min(92vw, 660px)', height: 160 }} />
-    )
+    return <div className="h-40" />
   }
   return (
-    <div className="shrink-0 mt-8" style={{ width: 'min(92vw, 660px)' }}>
-      {/* 上排：统计大数字 */}
-      <div className="flex items-center gap-8">
-        <div className="flex-1">
-          <p className="text-xs tracking-wide" style={{ color: 'rgba(236,253,245,0.5)' }}>📖 今日学习</p>
-          <p className="text-3xl font-bold tabular-nums mt-1" style={{ color: 'rgba(236,253,245,0.95)' }}>
-            {formatDuration(today.totalSeconds)}
-          </p>
-        </div>
-        <div className="h-10 w-px" style={{ background: 'rgba(255,255,255,0.10)' }} />
-        <div className="flex-1">
-          <p className="text-xs tracking-wide" style={{ color: 'rgba(236,253,245,0.5)' }}>🔥 连续打卡</p>
-          <p className="text-3xl font-bold tabular-nums mt-1">
-            {today.consecutive}
-            <span className="text-lg font-semibold ml-1.5" style={{ color: 'rgba(236,253,245,0.6)' }}>天</span>
-          </p>
-        </div>
-      </div>
-      {/* 分隔线 */}
+    <div>
+      <TodayStatsRow today={today} />
       <div className="h-px my-3.5" style={{ background: 'rgba(255,255,255,0.08)' }} />
-      {/* 下排：科目目标进度 */}
-      <div className="space-y-3">
-        {today.subjects.map(s => {
-          const pct = s.target > 0 ? Math.min(100, (s.seconds / s.target) * 100) : 0
-          const done = s.seconds >= s.target
-          const color = getSubjectColor(s.subject)
+      <SubjectProgress subjects={today.subjects} />
+    </div>
+  )
+}
+
+/** 近 7 日专注迷你柱状图（周一 → 周日，今天高亮发光）。
+ *  柱区高度自适应（90~220px，随面板高度伸缩但封顶），柱子按真实比例缩放 */
+function WeekBars({ week }: { week: WeekDay[] | null }): React.ReactElement {
+  if (!week || week.length === 0) return null
+  const max = Math.max(...week.map(d => d.total), 1)
+  const todayIdx = (new Date().getDay() + 6) % 7 // 周一=0
+  const labels = ['一', '二', '三', '四', '五', '六', '日']
+  return (
+    <div className="w-full flex-1 min-h-0 flex flex-col justify-center">
+      <p className="mono text-[10px] tracking-[0.18em] mb-2" style={{ color: 'rgba(236,253,245,0.45)' }}>
+        📊 近 7 日专注 WEEK.FOCUS
+      </p>
+      <div className="flex items-end gap-1.5 flex-1 min-h-[90px] max-h-[220px]">
+        {week.map((d, i) => {
+          const isToday = i === todayIdx
+          // 百分比基于柱区实际高度，留出底部标签空间，比例真实
+          const pct = Math.max(5, Math.min(88, Math.round((d.total / max) * 100)))
           return (
-            <div key={s.subject}>
-              <div className="flex items-center justify-between text-sm mb-2">
-                <span className="flex items-center min-w-0" style={{ color: 'rgba(236,253,245,0.85)' }}>
-                  <span
-                    className="w-6 h-6 rounded-full flex items-center justify-center text-xs mr-2 flex-shrink-0"
-                    style={{ background: color + '26' }}
-                  >
-                    {getSubjectIcon(s.subject)}
-                  </span>
-                  <span className="truncate">{s.subject} {done && <span style={{ color: '#34d399' }}>✓</span>}</span>
-                </span>
-                <span className="tabular-nums flex-shrink-0 ml-2 text-sm" style={{ color: 'rgba(236,253,245,0.5)' }}>
-                  {formatDuration(s.seconds)}
-                  <span className="ml-2 font-semibold" style={{ color: done ? '#34d399' : color }}>
-                    {Math.round(pct)}%
-                  </span>
-                </span>
-              </div>
-              <div className="h-2.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
-                <div
-                  className="h-full rounded-full transition-all duration-700"
-                  style={{
-                    width: `${pct}%`,
-                    background: done
-                      ? 'linear-gradient(90deg, #10b981, #34d399)'
-                      : `linear-gradient(90deg, ${color}bb, ${color})`,
-                    boxShadow: `0 0 10px ${done ? 'rgba(52,211,153,0.6)' : color + '55'}`,
-                  }}
-                />
-              </div>
+            <div key={d.date} className="flex-1 h-full flex flex-col justify-end items-center gap-1 min-w-0" title={`${d.date} · ${formatDuration(d.total)}`}>
+              <div
+                className="week-bar w-full rounded-t-md"
+                style={{
+                  height: `${pct}%`,
+                  background: isToday
+                    ? 'linear-gradient(180deg, #6ee7b7, #10b981)'
+                    : 'linear-gradient(180deg, rgba(110,231,183,0.4), rgba(110,231,183,0.15))',
+                  boxShadow: isToday ? '0 0 12px rgba(52,211,153,0.55)' : undefined,
+                }}
+              />
+              <span className="mono text-[9px] leading-none" style={{ color: isToday ? 'rgba(110,231,183,0.95)' : 'rgba(236,253,245,0.35)' }}>
+                {labels[i]}
+              </span>
             </div>
           )
         })}
@@ -599,10 +1336,11 @@ function TodayBoard({ today }: { today: TodayStats | null }): React.ReactElement
   )
 }
 
-/** 手机桌面风格的软件图标卡片：hover 上浮发光 + 悬停删除 + 拖拽排序 */
-function AppTile({ label, icon, onLaunch, onRemove, draggable, isDragging, isDragOver, onDragStart, onDragOver, onDrop, onDragEnd }: {
+/** 科技风软件图标卡片：正方形方框 + 顶部亮线 + hover 上浮发光 + 点击涟漪（正圆）+ 悬停删除 + 拖拽排序 */
+function AppTile({ label, icon, pulsing, onLaunch, onRemove, draggable, isDragging, isDragOver, onDragStart, onDragOver, onDrop, onDragEnd }: {
   label: string
   icon?: string
+  pulsing?: boolean
   onLaunch: () => void
   onRemove: () => void
   draggable?: boolean
@@ -622,29 +1360,41 @@ function AppTile({ label, icon, onLaunch, onRemove, draggable, isDragging, isDra
         onDrop={onDrop}
         onDragEnd={onDragEnd}
         onClick={onLaunch}
-        className="w-full flex flex-col items-center gap-2 py-4 rounded-[20px] select-none transition-all duration-200 hover:scale-110 hover:-translate-y-1 hover:bg-white/10 hover:shadow-[0_8px_28px_rgba(16,185,129,0.35)] active:scale-95"
+        title={label}
+        className="relative w-[clamp(112px,6vw,168px)] h-[clamp(112px,6vw,168px)] flex flex-col items-center justify-center gap-1.5 rounded-xl select-none transition-all duration-200 hover:-translate-y-1.5 hover:bg-white/10 hover:shadow-[0_10px_32px_rgba(16,185,129,0.28)] active:scale-95"
         style={{
-          background: isDragOver ? 'rgba(52,211,153,0.20)' : undefined,
+          border: '1px solid rgba(255,255,255,0.10)',
+          background: isDragOver ? 'rgba(52,211,153,0.16)' : 'rgba(255,255,255,0.04)',
           backdropFilter: 'blur(10px)',
           boxShadow: isDragOver ? '0 0 0 2px rgba(52,211,153,0.6), 0 8px 24px rgba(0,0,0,0.25)' : undefined,
           opacity: isDragging ? 0.45 : 1,
           cursor: draggable ? 'grab' : 'pointer',
         }}
       >
+        {/* 顶部装饰亮线 */}
+        <span
+          className="absolute top-0 left-4 right-4 h-px pointer-events-none"
+          style={{ background: 'linear-gradient(90deg, transparent, rgba(110,231,183,0.45), transparent)' }}
+        />
+        {/* 点击涟漪（正圆） */}
+        {pulsing && <span className="tile-ripple" />}
         {icon ? (
           <img
             src={icon}
             alt={label}
-            className="w-14 h-14 rounded-2xl"
-            style={{ animation: 'focus-breathe 4s ease-in-out infinite', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.25))' }}
             draggable={false}
+            className="w-[clamp(56px,3vw,84px)] h-[clamp(56px,3vw,84px)] rounded-lg"
+            style={{ animation: 'focus-breathe 4s ease-in-out infinite', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.3))' }}
           />
         ) : (
-          <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl font-semibold">
+          <div
+            className="w-[clamp(56px,3vw,84px)] h-[clamp(56px,3vw,84px)] rounded-lg flex items-center justify-center text-[clamp(20px,1.1vw,30px)] font-semibold"
+            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}
+          >
             {label === '澜山' ? '🍃' : label.slice(0, 1).toUpperCase()}
           </div>
         )}
-        <span className="text-sm max-w-full truncate px-1" title={label} style={{ color: 'rgba(236,253,245,0.9)' }}>
+        <span className="mono text-[clamp(10px,0.5vw,13px)] max-w-[clamp(96px,5.2vw,144px)] truncate px-1" title={label} style={{ color: 'rgba(236,253,245,0.9)' }}>
           {label}
         </span>
       </button>

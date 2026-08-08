@@ -69,6 +69,7 @@ interface LanshanApi {
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>
+  onMaximizeChange: (cb: (maximized: boolean) => void) => () => void
   setAutoStart: (enable: boolean) => Promise<void>
   exportData: () => Promise<boolean>
   syncNow: () => Promise<boolean>
