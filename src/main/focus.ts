@@ -44,6 +44,8 @@ export interface FocusTick {
 /** 主窗口访问钩子（由 index.ts 注入，避免循环依赖） */
 export interface FocusHooks {
   getMainWindow: () => BrowserWindow | null
+  /** 严格模式学习时段内是否锁定（禁止结束专注）；由 index.ts 注入，避免与 schedule.ts 循环依赖 */
+  isScheduleLocked?: () => boolean
 }
 
 // ─── 状态 ───
@@ -596,6 +598,11 @@ function startTimers(): void {
 function registerEscapeShortcut(): void {
   try {
     globalShortcut.register('CommandOrControl+Shift+F10', () => {
+      // 严格模式学习时段内锁定：禁止提前结束专注（时段结束自动解锁）
+      if (hooks.isScheduleLocked?.()) {
+        console.log('[focus] 严格模式学习时段内，逃生快捷键暂不可用')
+        return
+      }
       console.log('[focus] 逃生快捷键触发，结束专注')
       stopFocusSession()
     })
@@ -620,13 +627,17 @@ function stopTimers(): void {
 
 // ─── 会话控制 ───
 
-/** 开始专注：隐藏主窗口，弹出专注桌面，启动前台巡逻 */
-export async function startFocusSession(durationMin: number): Promise<boolean> {
+/** 开始专注：隐藏主窗口，弹出专注桌面，启动前台巡逻。
+ *  endAt 可选：日程模式传入精确结束时间戳（到点由倒计时自然结束）；常规调用按分钟数计算 */
+export async function startFocusSession(durationMin: number, endAt?: number): Promise<boolean> {
   if (session.active) return false
-  const minutes = Math.min(Math.max(Math.round(durationMin), 1), 600)
+  const now = Date.now()
+  const fallbackEnd = now + Math.min(Math.max(Math.round(durationMin), 1), 600) * 60_000
+  const end = endAt && endAt > now ? endAt : fallbackEnd
+  const minutes = Math.min(Math.max(Math.round((end - now) / 60_000), 1), 600)
   session = {
     active: true,
-    endAt: Date.now() + minutes * 60_000,
+    endAt: end,
     durationMin: minutes,
     whitelist: ensureDefaultWhitelist(),
     grace: null,

@@ -31,8 +31,12 @@
 │   │   ├── tray.ts            # 系统托盘：图标、科目切换菜单
 │   │   ├── makeup.ts          # 补签/盈余引擎（纯函数分配算法）
 │   │   ├── focus.ts           # 专注模式：锁屏、窗口级锁定、白名单
+│   │   ├── schedule.ts        # 专注日程调度：到点自动进入/结束、严格模式锁定
 │   │   ├── overlay.ts         # 专注覆盖层窗口管理（置顶/抬升）
 │   │   └── ps.ts              # PowerShell 辅助（任务栏隐藏/恢复等）
+│   │
+│   ├── shared/                # 主进程与渲染端共享的纯逻辑（无 Electron 依赖）
+│   │   └── schedule.ts        # 日程类型/解析/时段查找/锁定判定（纯函数）
 │   │
 │   ├── preload/
 │   │   └── index.ts           # contextBridge：暴露 lanshan API 给渲染进程
@@ -557,6 +561,18 @@ FIFO 消耗： 补签按盈余产生时间先进先出，tooltip 显示来源日
 - `ps.ts`：PowerShell 辅助脚本（任务栏隐藏/显示、Alt 键解锁、UTF-8 输出）
 - 渲染层：`Focus.tsx`（白名单管理/开始结束）、`FocusOverlay.tsx`（全屏倒计时 UI）
 - 测试：`scripts/focus-seed-test.ts`
+
+### 13.1 专注日程（schedule.ts + shared/schedule.ts）
+
+按用户设置的学习时段自动进入/结束专注；只存"学习时段"，休息时段无需任何操作。
+
+- **设置键**：`focus_schedule_enabled`（开关）、`focus_schedule_mode`（`loose` 宽松 / `strict` 严格）、`focus_schedule`（JSON：`[{s:"HH:MM", e:"HH:MM"}]`）
+- **调度**：主进程 10 秒轮询（`initSchedule()`，`initFocus()` 之后启动）。检测到处于学习时段且无会话 → `startFocusSession(60, slotEndAt)`，endAt 精确等于时段结束时刻，由专注倒计时自然到点结束
+- **宽松模式**：按「日期+时段起点」去重，仅当日首次自动进入；手动退出后本时段不重入
+- **严格模式**：手动退出后 5 秒冷却自动重入；`isScheduleLocked()` 在"严格 + 学习时段内"返回 true，主进程据此拒绝 `stop-focus` / `quit-app` IPC 和全局逃生快捷键，渲染端据此禁用结束/退出按钮、关闭日程开关、模式切换与时段编辑
+- **休息提醒**：日程启动的会话结束后发系统通知（距下次专注开始剩余分钟数）
+- **崩溃/重启**：正常退出由 `initFocus()` 恢复锁屏会话；强制关机走崩溃清理路径，但调度器启动立即检查，时段内自动重新进入——两种路径都无法在时段内绕过
+- **共享纯函数**：`shared/schedule.ts` 提供 `parseSchedule` / `toMinutes` / `findActiveSlot` / `findNextSlot` / `minutesUntilNext` / `isScheduleLocked`，主进程与渲染端（设置页、专注页、专注桌面）复用，保证判定一致
 
 ---
 

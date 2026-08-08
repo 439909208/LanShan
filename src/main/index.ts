@@ -6,6 +6,7 @@ import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments, rebuildMergedSegmentsInRange } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
 import { initFocus, shutdownFocus, setFocusHooks, startFocusSession, stopFocusSession, getFocusState, setFocusWhitelist, getFocusHidden, setFocusHidden, getFocusOrder, setFocusOrder, getFocusColor, setFocusColor, getRunningApps, resolveAppPath, getAppIcon, getWindowUrl, launchFocusApp, restoreTaskbarNow, FocusApp } from './focus'
+import { initSchedule, stopSchedule, isScheduleLocked } from './schedule'
 
 // 全局异常兜底：任何未捕获异常/未处理拒绝都不让主进程直接崩溃（曾导致专注中闪退、任务栏残留）
 process.on('uncaughtException', (err) => {
@@ -240,6 +241,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-focus-state', () => getFocusState())
   ipcMain.handle('start-focus', (_event, durationMin: number) => startFocusSession(durationMin))
   ipcMain.handle('stop-focus', () => {
+    // 严格模式学习时段内锁定：拒绝提前结束专注（时段结束自动解锁）
+    if (isScheduleLocked()) {
+      console.log('[focus] 严格模式学习时段内，拒绝手动结束专注')
+      return
+    }
     try {
       stopFocusSession()
     } catch (err) {
@@ -261,6 +267,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-window-url', (_event, app: FocusApp) => getWindowUrl(app))
   ipcMain.handle('launch-focus-app', (_event, name: string, titleMatch?: string) => launchFocusApp(name, titleMatch))
   ipcMain.handle('quit-app', async () => {
+    // 严格模式学习时段内锁定：禁止退出应用（退出会绕过专注锁定）
+    if (isScheduleLocked()) {
+      console.log('[focus] 严格模式学习时段内，拒绝退出应用')
+      return
+    }
     // 专注桌面的逃生口：结束专注 + 完全退出应用
     try {
       stopFocusSession()
@@ -328,8 +339,10 @@ app.whenReady().then(async () => {
   startSync()
 
   // Focus mode: 注入主窗口钩子 + 恢复未完成的专注会话
-  setFocusHooks({ getMainWindow: () => mainWindow })
+  setFocusHooks({ getMainWindow: () => mainWindow, isScheduleLocked })
   initFocus()
+  // 专注日程模式：到点自动进入/结束专注（initFocus 之后启动，衔接崩溃恢复的会话）
+  initSchedule()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -348,6 +361,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   (app as any).isQuitting = true
   stopSync()
+  stopSchedule()
   shutdownFocus()  // 保留持久化会话，重启后由 initFocus 恢复
   closeDatabase()
 })

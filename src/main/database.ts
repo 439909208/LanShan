@@ -4,6 +4,7 @@ import { join } from 'path'
 import { app } from 'electron'
 import { simulateMakeups, addDays, diffDays, dateStr, MAKEUP_WINDOW_DAYS, MAKEUP_FILL_ALL } from './makeup'
 import type { MakeupFill } from './makeup'
+import { DEFAULT_FOCUS_SCHEDULE } from '../shared/schedule'
 
 let db: SqlJsDatabase | null = null
 const DATA_DIR = join(app.getPath('home'), '澜山数据')
@@ -105,6 +106,9 @@ const DEFAULT_SETTINGS: Record<string, string | number | boolean> = {
   summer_start: '07-10',
   summer_end: '08-31',
   focus_whitelist: '[]',  // 专注白名单 JSON：[{ name, path?, title? }]
+  focus_schedule_enabled: false,  // 专注日程模式开关（到点自动进入/结束专注）
+  focus_schedule_mode: 'loose',  // 宽松：手动退出后本时段不重入；strict：手动退出后 30 秒重入
+  focus_schedule: JSON.stringify(DEFAULT_FOCUS_SCHEDULE),  // 学习时段 JSON：[{ s: 'HH:MM', e: 'HH:MM' }]
 }
 
 export async function initDatabase(): Promise<void> {

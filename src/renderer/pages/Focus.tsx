@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { formatCountdown, sortWhitelistByOrder } from '../utils'
+import { DEFAULT_FOCUS_SCHEDULE, ScheduleSlot, parseSchedule, findActiveSlot, findNextSlot, minutesUntilNext, isScheduleLocked } from '../../shared/schedule'
 
 const PRESETS = [25, 45, 60]
 
@@ -115,6 +116,35 @@ export default function Focus(): React.ReactElement {
     const t = setInterval(refreshRunningApps, 5000)
     return () => clearInterval(t)
   }, [scanOn])
+
+  // 日程模式提示：读取设置 + 每 30 秒刷新"下次自动专注"时段
+  const [scheduleInfo, setScheduleInfo] = useState<{
+    enabled: boolean
+    active: ScheduleSlot | null
+    next: ScheduleSlot | null
+    untilMin: number | null
+    locked: boolean  // 严格模式 + 学习时段内：禁止结束专注
+  }>({ enabled: false, active: null, next: null, untilMin: null, locked: false })
+  useEffect(() => {
+    const refresh = (): void => {
+      window.lanshan.getSettings().then(s => {
+        const slots = s.focus_schedule === undefined ? DEFAULT_FOCUS_SCHEDULE : parseSchedule(s.focus_schedule)
+        const d = new Date()
+        const minute = d.getHours() * 60 + d.getMinutes()
+        const enabled = s.focus_schedule_enabled === 'true'
+        setScheduleInfo({
+          enabled,
+          active: findActiveSlot(slots, minute),
+          next: findNextSlot(slots, minute),
+          untilMin: minutesUntilNext(slots, minute),
+          locked: enabled && isScheduleLocked(slots, minute, s.focus_schedule_mode ?? 'loose'),
+        })
+      }).catch(() => { /* 设置读取失败不影响专注 */ })
+    }
+    refresh()
+    const t = setInterval(refresh, 30_000)
+    return () => clearInterval(t)
+  }, [])
 
   async function refreshRunningApps(): Promise<void> {
     const next = await window.lanshan.getRunningApps()
@@ -312,10 +342,13 @@ export default function Focus(): React.ReactElement {
             </p>
             <button
               onClick={stopFocus}
-              className="mt-5 px-7 py-2.5 rounded-xl text-sm font-bold tracking-wider transition-all hover:brightness-110"
-              style={{ background: 'linear-gradient(135deg, #f87171, #dc2626)', color: 'white', boxShadow: '0 4px 16px rgba(239,68,68,0.35)' }}
+              disabled={scheduleInfo.locked}
+              className="mt-5 px-7 py-2.5 rounded-xl text-sm font-bold tracking-wider transition-all"
+              style={scheduleInfo.locked
+                ? { background: 'var(--bg-elevated)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'not-allowed' }
+                : { background: 'linear-gradient(135deg, #f87171, #dc2626)', color: 'white', boxShadow: '0 4px 16px rgba(239,68,68,0.35)' }}
             >
-              ⏹ 结束专注
+              {scheduleInfo.locked ? '🔒 严格模式 · 时段内不可结束' : '⏹ 结束专注'}
             </button>
           </div>
         ) : (
@@ -364,6 +397,15 @@ export default function Focus(): React.ReactElement {
             <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
               开始后主窗口隐藏，全屏专注桌面弹出：只有白名单里的软件可用，其他软件会被盖住（不会关闭，仍在后台运行）
             </p>
+            {scheduleInfo.enabled && (
+              <p className="text-xs mt-2" style={{ color: 'var(--text-secondary)' }}>
+                {scheduleInfo.active
+                  ? `📅 日程模式 · 当前学习时段 ${scheduleInfo.active.s} - ${scheduleInfo.active.e}（到点自动进入）`
+                  : scheduleInfo.next && scheduleInfo.untilMin !== null
+                    ? `⏰ 休息中 · 距下次专注还有约 ${scheduleInfo.untilMin} 分钟（${scheduleInfo.next.s} 开始）`
+                    : '📅 日程模式已开启 · 今天的学习时段已结束'}
+              </p>
+            )}
           </div>
         )}
         </div>

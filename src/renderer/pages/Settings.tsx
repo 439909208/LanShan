@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getSubjectIcon, formatShortDuration } from '../utils'
+import { DEFAULT_FOCUS_SCHEDULE, ScheduleSlot, parseSchedule, toMinutes, findActiveSlot, findNextSlot, minutesUntilNext, isScheduleLocked } from '../../shared/schedule'
 
 export default function Settings(): React.ReactElement {
   const [settings, setSettings] = useState<Record<string, string>>({})
@@ -95,6 +96,9 @@ export default function Settings(): React.ReactElement {
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>格式 MM-DD</span>
         </div>
       </div>
+
+      {/* 专注日程 */}
+      <FocusScheduleCard settings={settings} updateSetting={updateSetting} />
 
       {/* Daily Targets */}
       <div className="card">
@@ -380,6 +384,272 @@ function ClassificationRules(): React.ReactElement {
           📥 导入规则
         </button>
       </div>
+    </div>
+  )
+}
+
+/** 专注日程：到点自动进入/结束专注的学习时段管理（宽松/严格模式 + 文本解析 + 手动添加） */
+function FocusScheduleCard({ settings, updateSetting }: {
+  settings: Record<string, string>
+  updateSetting: (key: string, value: string | number | boolean) => void
+}): React.ReactElement {
+  const enabled = settings.focus_schedule_enabled === 'true'
+  const mode = settings.focus_schedule_mode === 'strict' ? 'strict' : 'loose'
+  // 时段列表存本地 state（允许编辑中间态，如清空一个输入框），写回时原样保存，
+  // 主进程调度器解析时自动丢弃非法行；设置异步加载完成后只同步一次。
+  const lastSaved = useRef('')
+  const [slots, setSlots] = useState<ScheduleSlot[]>(() =>
+    settings.focus_schedule === undefined ? DEFAULT_FOCUS_SCHEDULE : parseSchedule(settings.focus_schedule))
+  const [draft, setDraft] = useState('')
+  const [parseMsg, setParseMsg] = useState('')
+  const [nowMin, setNowMin] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes() })
+
+  useEffect(() => {
+    if (settings.focus_schedule === undefined || settings.focus_schedule === lastSaved.current) return
+    lastSaved.current = settings.focus_schedule
+    setSlots(parseSchedule(settings.focus_schedule))
+  }, [settings.focus_schedule])
+
+  // 预览每 30 秒刷新
+  useEffect(() => {
+    const t = setInterval(() => {
+      const d = new Date()
+      setNowMin(d.getHours() * 60 + d.getMinutes())
+    }, 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  const saveSlots = (next: ScheduleSlot[]): void => {
+    setSlots(next)
+    const json = JSON.stringify(next)
+    lastSaved.current = json
+    updateSetting('focus_schedule', json)
+  }
+
+  /** 粘贴整张日程表 → 自动提取学习时段、忽略休息行；解析结果替换当前列表 */
+  const parseFromText = (): void => {
+    const found: ScheduleSlot[] = []
+    let ignored = 0
+    let skipped = 0
+    for (const rawLine of draft.split('\n')) {
+      const line = rawLine.replace(/(\d{1,2}):(\d{2}):\d{2}/g, '$1:$2').trim()  // 兼容 HH:MM:SS
+      if (!line) continue
+      // 休息行直接忽略（标注同时含"学习"和"休息"时按学习处理）
+      if (/休息/.test(line) && !/学习/.test(line)) { ignored++; continue }
+      const m = line.match(/(\d{1,2}):(\d{2})(?!:\d)\s*[-~至到]\s*(\d{1,2}):(\d{2})(?!:\d)/)
+      if (!m) { skipped++; continue }
+      const s = m[1].padStart(2, '0') + ':' + m[2]
+      const e = m[3].padStart(2, '0') + ':' + m[4]
+      const si = toMinutes(s)
+      const ei = toMinutes(e)
+      if (si < 0 || ei < 0 || ei <= si) { skipped++; continue }
+      found.push({ s, e })
+    }
+    if (found.length === 0) {
+      setParseMsg('未识别到有效学习时段，请检查格式（每行如：07:00 - 08:00 学习）')
+      return
+    }
+    saveSlots(found)
+    setParseMsg(`已识别 ${found.length} 个学习时段${ignored ? `，忽略休息 ${ignored} 行` : ''}${skipped ? `，跳过 ${skipped} 行` : ''}，已替换当前日程`)
+  }
+
+  const active = findActiveSlot(slots, nowMin)
+  const next = findNextSlot(slots, nowMin)
+  const until = minutesUntilNext(slots, nowMin)
+  // 严格模式 + 当前处于学习时段 → 锁定：不能切宽松、不能关闭日程、不能提前结束专注
+  const locked = enabled && isScheduleLocked(slots, nowMin, mode)
+
+  return (
+    <div className="card">
+      <h3 className="text-base font-medium mb-5" style={{ color: 'var(--text-secondary)' }}>
+        📅 专注日程
+      </h3>
+
+      {/* 启用开关 */}
+      <div className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+        <div className="pr-4">
+          <p className="text-base font-medium">日程模式</p>
+          <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            到点自动进入专注、到点自动结束；休息时段无需设置
+          </p>
+        </div>
+        <div
+          className={`toggle ${enabled ? 'active' : ''}`}
+          onClick={locked ? undefined : () => updateSetting('focus_schedule_enabled', !enabled)}
+        />
+      </div>
+
+      {/* 宽松 / 严格模式 */}
+      <div className="flex gap-2 mt-4">
+        {[
+          { key: 'loose', label: '宽松', desc: '手动提前结束后，本时段不再自动进入，下个时段照常' },
+          { key: 'strict', label: '严格', desc: '手动结束后 5 秒自动重新进入，直到时段结束' },
+        ].map(opt => {
+          // 时段锁定：不能从严格切回宽松
+          const off = locked && opt.key === 'loose'
+          return (
+            <button
+              key={opt.key}
+              onClick={off ? undefined : () => updateSetting('focus_schedule_mode', opt.key)}
+              disabled={off}
+              className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+              style={
+                off
+                  ? { background: 'var(--bg-elevated)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'not-allowed', opacity: 0.6 }
+                  : mode === opt.key
+                    ? { background: 'var(--accent)', color: 'white' }
+                    : { background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-light)' }
+              }
+            >
+              {opt.label}
+            </button>
+          )
+        })}
+      </div>
+      {locked ? (
+        <p className="text-xs mt-2" style={{ color: '#fbbf24' }}>
+          🔒 当前处于学习时段（严格模式锁定）：不能切换宽松模式、关闭/修改日程或提前结束专注，时段结束自动解锁
+        </p>
+      ) : (
+        <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+          {mode === 'strict'
+            ? '严格模式：手动结束后 5 秒自动重新进入，直到时段结束；时段内锁定以上操作'
+            : '宽松模式：手动提前结束后，本时段不再自动进入，下个时段照常'}
+        </p>
+      )}
+
+      {/* 状态预览 */}
+      {enabled && (
+        <p className="text-xs mt-3 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-bg)', color: 'var(--accent)' }}>
+          {active
+            ? `🔒 当前学习时段 ${active.s} - ${active.e} · 专注中`
+            : next && until !== null
+              ? `☕ 休息中 · 距下次专注还有约 ${until} 分钟（${next.s} 开始）`
+              : '✅ 今天的学习时段已全部结束'}
+        </p>
+      )}
+
+      {/* 手动时段列表：按开始时间排序显示，相邻时段之间标注休息间隔 */}
+      <div className="mt-4">
+        {slots
+          .map((x, idx) => ({ x, idx }))
+          .sort((a, b) => toMinutes(a.x.s) - toMinutes(b.x.s))
+          .map(({ x: slot, idx: i }, rowIdx, sorted) => {
+            const si = toMinutes(slot.s)
+            const ei = toMinutes(slot.e)
+            const invalid = si < 0 || ei < 0 || ei <= si
+            // 与下一个学习时段的时间差 = 休息时间（下一个时段无效时不标注）
+            const nextRow = sorted[rowIdx + 1]
+            const nextValid = !!nextRow && toMinutes(nextRow.x.s) >= 0 && toMinutes(nextRow.x.e) > toMinutes(nextRow.x.s)
+            const gap = !invalid && nextValid ? toMinutes(nextRow!.x.s) - ei : null
+            return (
+              <div key={i}>
+                <div className="flex items-center gap-2 py-0.5">
+                  <input
+                    type="time"
+                    value={slot.s}
+                    disabled={locked}
+                    onChange={(e) => saveSlots(slots.map((x, j) => (j === i ? { ...x, s: e.target.value } : x)))}
+                    className="rounded-lg px-2 py-1.5 text-sm w-28 transition-all"
+                    style={{
+                      background: 'var(--bg-elevated)',
+                      border: invalid ? '1px solid rgba(239,68,68,0.5)' : '1px solid var(--border-light)',
+                      color: 'var(--text-primary)',
+                      opacity: locked ? 0.5 : 1,
+                      cursor: locked ? 'not-allowed' : undefined,
+                    }}
+                  />
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>→</span>
+                  <input
+                    type="time"
+                    value={slot.e}
+                    disabled={locked}
+                    onChange={(e) => saveSlots(slots.map((x, j) => (j === i ? { ...x, e: e.target.value } : x)))}
+                    className="rounded-lg px-2 py-1.5 text-sm w-28 transition-all"
+                    style={{
+                      background: 'var(--bg-elevated)',
+                      border: invalid ? '1px solid rgba(239,68,68,0.5)' : '1px solid var(--border-light)',
+                      color: 'var(--text-primary)',
+                      opacity: locked ? 0.5 : 1,
+                      cursor: locked ? 'not-allowed' : undefined,
+                    }}
+                  />
+                  <span className="text-xs flex-1 font-medium" style={{ color: invalid ? '#ef4444' : 'var(--text-secondary)' }}>
+                    {invalid ? '结束需晚于开始' : `⏱ 共 ${ei - si} 分钟`}
+                  </span>
+                  <button
+                    onClick={() => saveSlots(slots.filter((_, j) => j !== i))}
+                    disabled={locked}
+                    className="text-xs"
+                    style={{ color: '#ef4444', opacity: locked ? 0.3 : 1, cursor: locked ? 'not-allowed' : 'pointer' }}
+                  >✕</button>
+                </div>
+                {/* 休息标注：垂直在上下两个时段之间，水平对齐"⏱ 共 X 分钟"列（与时段行同结构占位）；只有数字特殊标出 */}
+                {gap !== null && (
+                  <div className="flex items-center gap-2 -mt-1 select-none">
+                    <div className="w-28 shrink-0" />
+                    <span className="text-xs shrink-0" style={{ color: 'var(--text-muted)', visibility: 'hidden' }}>→</span>
+                    <div className="w-28 shrink-0" />
+                    <span className="text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                      ↓{' '}
+                      {gap > 0
+                        ? <>休息 <b style={{ color: '#fbbf24', fontWeight: 600 }}>{gap}</b> 分钟</>
+                        : gap === 0
+                          ? '连续无休息'
+                          : <>重叠 <b style={{ color: '#ef4444', fontWeight: 600 }}>{-gap}</b> 分钟</>}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        {slots.length === 0 && (
+          <p className="text-xs py-2 text-center" style={{ color: 'var(--text-muted)' }}>
+            暂无学习时段，可手动添加或粘贴日程表导入
+          </p>
+        )}
+      </div>
+      <button
+        onClick={() => saveSlots([...slots, { s: '', e: '' }])}
+        disabled={locked}
+        className="mt-2 w-full px-4 py-2 rounded-lg text-sm font-medium transition-all"
+        style={locked
+          ? { background: 'var(--bg-elevated)', color: 'var(--text-muted)', cursor: 'not-allowed', border: '1px solid var(--border)' }
+          : { background: 'var(--accent-bg)', color: 'var(--accent)' }}
+      >
+        + 添加学习时段
+      </button>
+
+      {/* 粘贴日程表解析 */}
+      <div className="mt-4">
+        <p className="text-sm font-medium mb-1.5">📋 粘贴日程表快速导入</p>
+        <textarea
+          value={draft}
+          disabled={locked}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={4}
+          placeholder={'整张日程表粘进来，自动提取学习时段、忽略休息行，例如：\n07:00 - 08:00  60分钟  学习\n08:00 - 08:15  15分钟  休息'}
+          className="w-full rounded-lg px-3 py-2 text-xs leading-relaxed transition-all resize-none"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-light)', color: 'var(--text-primary)', opacity: locked ? 0.5 : 1 }}
+        />
+        <div className="flex items-center gap-2 mt-2">
+          <button
+            onClick={parseFromText}
+            disabled={locked}
+            className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            style={locked
+              ? { background: 'var(--bg-elevated)', color: 'var(--text-muted)', cursor: 'not-allowed', border: '1px solid var(--border)' }
+              : { background: 'var(--accent)', color: 'white' }}
+          >
+            解析为日程
+          </button>
+          {parseMsg && <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{parseMsg}</span>}
+        </div>
+      </div>
+
+      <p className="text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
+        解析结果会替换当前时段列表；休息时段无需设置，软件只在学习时段自动进入/结束专注
+      </p>
     </div>
   )
 }

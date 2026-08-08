@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { formatCountdown, formatDuration, getSubjectColor, getSubjectIcon, focusEntryKey, sortWhitelistByOrder } from '../utils'
+import { DEFAULT_FOCUS_SCHEDULE, parseSchedule, isScheduleLocked } from '../../shared/schedule'
 
 /** 背景主题：氛围色 → 深色渐变背景（与 🎨 色板一一对应） */
 const BG_THEMES: Record<string, string> = {
@@ -325,6 +326,9 @@ export default function FocusOverlay(): React.ReactElement {
   const remainingRef = useRef(0)
   const lastRemindRef = useRef(0)
   const wasActiveRef = useRef(false)
+  // 严格模式学习时段锁定：禁止结束专注（主进程同样会拒绝，这里是 UI 层禁止）
+  const [scheduleLocked, setScheduleLocked] = useState(false)
+  const scheduleLockedRef = useRef(false)
 
   /** 可选氛围色 */
   const POEM_COLORS = ['#ecfdf5', '#fbbf24', '#2dd4bf', '#60a5fa', '#a78bfa', '#fb7185']
@@ -364,14 +368,33 @@ export default function FocusOverlay(): React.ReactElement {
     })
     const clock = setInterval(() => setNow(Date.now()), 1000)
     // 键盘逃生：Esc 或 Ctrl+Shift+F10 直接结束专注（不弹确认，保证能退出）。
+    // 严格模式学习时段内锁定：忽略（时段结束自动解锁）。
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || (e.ctrlKey && e.shiftKey && e.key === 'F10')) {
+        if (scheduleLockedRef.current) return
         e.preventDefault()
         window.lanshan.stopFocus().catch(() => { /* 主进程侧还有全局快捷键兜底 */ })
       }
     }
     window.addEventListener('keydown', onKey)
     return () => { unsubscribe(); clearInterval(clock); window.removeEventListener('keydown', onKey) }
+  }, [])
+
+  // 严格模式时段锁定状态：读取设置 + 每 30 秒刷新（与今日战况轮询同步）
+  useEffect(() => {
+    const refresh = (): void => {
+      window.lanshan.getSettings().then(s => {
+        const slots = s.focus_schedule === undefined ? DEFAULT_FOCUS_SCHEDULE : parseSchedule(s.focus_schedule)
+        const d = new Date()
+        const locked = s.focus_schedule_enabled === 'true' &&
+          isScheduleLocked(slots, d.getHours() * 60 + d.getMinutes(), s.focus_schedule_mode ?? 'loose')
+        setScheduleLocked(locked)
+        scheduleLockedRef.current = locked
+      }).catch(() => { /* 设置读取失败按未锁定处理 */ })
+    }
+    refresh()
+    const t = setInterval(refresh, 30_000)
+    return () => clearInterval(t)
   }, [])
 
   /** 今日战况 + 近 7 日：挂载时加载一次 + 每 30s 轻量轮询（失败静默，不影响倒计时） */
@@ -569,6 +592,11 @@ export default function FocusOverlay(): React.ReactElement {
   }
 
   async function endFocus(): Promise<void> {
+    // 严格模式学习时段内锁定：禁止提前结束（时段结束自动解锁）
+    if (scheduleLocked) {
+      setError('🔒 严格模式学习时段内不可结束，时段结束自动解锁')
+      return
+    }
     // 点右下角直接结束，不再弹确认（用户要求；误触可用 Esc/Ctrl+Shift+F10 兜底）
     try {
       await window.lanshan.stopFocus()
@@ -578,6 +606,11 @@ export default function FocusOverlay(): React.ReactElement {
   }
 
   async function quitApp(): Promise<void> {
+    // 严格模式学习时段内锁定：禁止退出应用（退出会绕过专注锁定）
+    if (scheduleLocked) {
+      setError('🔒 严格模式学习时段内不可退出应用，时段结束自动解锁')
+      return
+    }
     try {
       await window.lanshan.quitApp()
     } catch (e) {
@@ -1000,17 +1033,23 @@ export default function FocusOverlay(): React.ReactElement {
       <div className="absolute bottom-7 right-8 z-20 flex items-center gap-3 select-none">
         <button
           onClick={quitApp}
-          className="px-4 py-2 rounded-xl text-xs font-medium transition-all border hover:bg-white/10"
-          style={{ borderColor: 'rgba(255,255,255,0.12)', color: 'rgba(236,253,245,0.75)' }}
+          disabled={scheduleLocked}
+          className="px-4 py-2 rounded-xl text-xs font-medium transition-all border"
+          style={scheduleLocked
+            ? { borderColor: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.25)', cursor: 'not-allowed' }
+            : { borderColor: 'rgba(255,255,255,0.12)', color: 'rgba(236,253,245,0.75)' }}
         >
-          退出应用
+          {scheduleLocked ? '🔒 已锁定' : '退出应用'}
         </button>
         <button
           onClick={endFocus}
-          className="px-6 py-2.5 rounded-xl text-xs font-bold tracking-wider transition-all hover:brightness-110"
-          style={{ background: 'linear-gradient(135deg, #f87171, #dc2626)', color: 'white', boxShadow: '0 4px 20px rgba(239,68,68,0.4)' }}
+          disabled={scheduleLocked}
+          className="px-6 py-2.5 rounded-xl text-xs font-bold tracking-wider transition-all"
+          style={scheduleLocked
+            ? { background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.35)', cursor: 'not-allowed' }
+            : { background: 'linear-gradient(135deg, #f87171, #dc2626)', color: 'white', boxShadow: '0 4px 20px rgba(239,68,68,0.4)' }}
         >
-          ⏹ 结束专注
+          {scheduleLocked ? '🔒 时段内锁定' : '⏹ 结束专注'}
         </button>
       </div>
 

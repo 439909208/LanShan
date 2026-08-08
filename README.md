@@ -11,6 +11,7 @@ Windows 桌面学习伴侣，后台默默记录学习时长，打开就是漂亮
 - 📊 **仪表盘** — 三科进度条（双档目标 + 当日盈余金光）、科目环形图、7 天趋势折线图
 - 🔥 **热力图** — 按科目达标数 3 级着色，按月视图，悬停/点击交互，支持盈余补签
 - 🍅 **专注模式** — 全屏专注桌面 + 窗口级锁定，白名单外窗口自动关闭，Esc/快捷键逃生
+- 📅 **专注日程** — 按每日学习时段到点自动进入/结束专注，宽松/严格双模式，粘贴日程表一键导入
 - 💰 **补签系统** — 超额时长累积为科目盈余池，手动补签最近空缺，格子圆点标记
 - 🏆 **成就系统** — 38 个成就（含隐藏），自动解锁 + Toast 弹窗
 - 🖱 **托盘快捷切换** — 右键切换当前科目，图标跟随变色，覆盖模糊条目
@@ -50,6 +51,7 @@ npm run pack
 │  ├─ 分类引擎            │             │  ├─ 时间轴              │
 │  ├─ 提醒服务            │             │  ├─ 专注模式            │
 │  ├─ 专注覆盖层          │             │  └─ 设置                │
+│  ├─ 日程调度            │
 │  ├─ 补签/盈余引擎       │             └─────────────────────────┘
 │  └─ PowerShell 辅助     │
 └─────────────────────────┘
@@ -96,6 +98,14 @@ SQLite raw_events → merged_segments → daily_stats
 - 不匹配的视频窗口自动关闭（WM_CLOSE 优先、强杀兜底），主界面 30 秒宽限期
 - 逃生机制：右下角结束/退出按钮、Esc、Ctrl+Shift+F10 全局快捷键
 - 会话持久化：正常退出恢复锁屏，崩溃重启自动清理现场，任务栏自动恢复
+
+### 专注日程（📅）
+
+- 设置页配置每日**学习时段**（粘贴整张日程表自动解析 / 手动逐条添加），休息时段无需设置
+- 到点自动进入专注、到点自动结束；专注结束发休息提醒（距下次专注开始剩余时间）
+- **宽松模式**：手动提前结束后本时段不再自动进入，下个时段照常
+- **严格模式**：手动退出 5 秒后自动重新进入；学习时段内锁定——不能切宽松、关闭/修改日程、提前结束专注或退出应用，时段结束自动解锁
+- 崩溃/重启安全：无论正常关机还是强制重启，只要开机时仍处于学习时段内都会自动恢复锁屏/重新进入
 
 ### 补签与盈余（💰）
 
@@ -163,6 +173,7 @@ A Windows desktop study companion that quietly tracks your study time in the bac
 - 📊 **Dashboard** — per-subject progress cards (dual-tier targets + gold glow when today's session has surplus), subject ring chart, 7-day trend chart
 - 🔥 **Heatmap** — month view colored by how many subject targets were met, hover/click interactions, surplus makeup support
 - 🍅 **Focus Mode** — fullscreen focus desktop with window-level locking; non-whitelisted windows are closed automatically; Esc / global hotkey escape hatch
+- 📅 **Focus Schedule** — auto enters/exits focus at your daily study slots; loose / strict modes; paste a whole timetable to import
 - 💰 **Makeup System** — over-target time accumulates into a per-subject surplus pool; manually fill gaps in the heatmap; filled cells show a dot marker
 - 🏆 **Achievements** — 38 achievements (incl. hidden ones), auto-unlock with toast notifications
 - 🖱 **Tray Quick Switch** — switch the current subject from the system tray; the tray icon color follows; overrides ambiguous entries
@@ -202,6 +213,7 @@ The portable build is emitted as `release/澜山.exe` — no installation needed
 │  ├─ Classification eng. │             │  ├─ Timeline            │
 │  ├─ Reminder service    │             │  ├─ Focus mode          │
 │  ├─ Focus overlay       │             │  └─ Settings            │
+│  ├─ Schedule engine     │
 │  ├─ Makeup engine       │             └─────────────────────────┘
 │  └─ PowerShell helper   │
 └─────────────────────────┘
@@ -248,6 +260,14 @@ Skipped:         chat apps, file explorer, lock screen, etc. → not recorded
 - Non-matching video windows are closed automatically (graceful WM_CLOSE first, forced kill as fallback); the main UI gets a 30-second grace period
 - Escape hatches: end/exit button, Esc, and a Ctrl+Shift+F10 global hotkey
 - Session persistence: quitting cleanly restores the lock screen; crash recovery cleans up automatically and restores the taskbar
+
+#### Focus Schedule (📅)
+
+- Configure daily **study slots** in Settings (paste a whole timetable to auto-parse, or add rows manually); rest periods need no setup
+- Auto-enters focus at each slot start and auto-ends at slot end; a break notification shows the time until the next slot
+- **Loose mode**: after a manual early exit the current slot is not re-entered; the next slot works as usual
+- **Strict mode**: re-enters 5 seconds after a manual exit; while inside a study slot, switching to loose mode, editing/closing the schedule, ending focus, or quitting the app are all locked until the slot ends
+- Crash / reboot safe: whether you shut down cleanly or force-power-off, rebooting inside a study slot restores the lock screen / re-enters automatically
 
 #### Makeup & Surplus (💰)
 
