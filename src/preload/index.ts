@@ -29,8 +29,15 @@ const api = {
   undoMakeup: (date: string, subject: Subject): Promise<void> => ipcRenderer.invoke('undo-makeup', date, subject),
   getDailyBreakdown: (date: string): Promise<any[]> => ipcRenderer.invoke('get-daily-breakdown', date),
   getRawTitleStats: (date: string): Promise<{ title: string; duration: number; subject: string }[]> => ipcRenderer.invoke('get-raw-title-stats', date),
-  getAchievements: (): Promise<any[]> => ipcRenderer.invoke('get-achievements'),
-  getNewUnlocks: (): Promise<string[]> => ipcRenderer.invoke('get-new-unlocks'),
+
+  // 刻章系统：定义 / 总览（含回放）/ 每日记录 / 佩戴位 / 新刻章轮询
+  getSealDefs: (): Promise<any[]> => ipcRenderer.invoke('get-seal-defs'),
+  getSealsOverview: (date?: string): Promise<any> => ipcRenderer.invoke('get-seals-overview', date ?? undefined),
+  getDailySealRecords: (date: string): Promise<string[]> => ipcRenderer.invoke('get-daily-seal-records', date),
+  getNewSeals: (): Promise<{ cumulative: string[]; daily: string[] }> => ipcRenderer.invoke('get-new-seals'),
+  setSealSlot: (slot: number, sealId: string): Promise<{ ok: boolean; message: string }> =>
+    ipcRenderer.invoke('set-seal-slot', slot, sealId),
+  clearSealSlot: (slot: number): Promise<void> => ipcRenderer.invoke('clear-seal-slot', slot),
 
   // Display helpers
   getSubjectColor: (subject: Subject): Promise<string> => ipcRenderer.invoke('get-subject-color', subject),

@@ -47,6 +47,8 @@ export default function WeekTrendChart({ data, prevWeekData, coreSubjects }: Wee
   const borderColor = cssVar('--border') || '#1e293b'
   const borderLight = cssVar('--border-light') || '#334155'
   const secondaryColor = cssVar('--text-secondary') || '#94a3b8'
+  // 主页字号倍率（设置页可调）：乘到刻度/tooltip/图例等 JS 侧字号上
+  const fontScale = parseFloat(cssVar('--dash-font-scale')) || 1
 
   return (
     <div className="flex flex-col h-full">
@@ -92,12 +94,12 @@ export default function WeekTrendChart({ data, prevWeekData, coreSubjects }: Wee
             <CartesianGrid strokeDasharray="3 3" stroke={borderColor} vertical={false} />
             <XAxis
               dataKey="label"
-              tick={{ fill: mutedColor, fontSize: 12 }}
+              tick={{ fill: mutedColor, fontSize: 12 * fontScale }}
               axisLine={{ stroke: borderLight }}
               tickLine={false}
             />
             <YAxis
-              tick={{ fill: mutedColor, fontSize: 12 }}
+              tick={{ fill: mutedColor, fontSize: 12 * fontScale }}
               axisLine={false}
               tickLine={false}
               width={45}
@@ -108,11 +110,11 @@ export default function WeekTrendChart({ data, prevWeekData, coreSubjects }: Wee
                 background: tooltipBg,
                 border: `1px solid ${tooltipBorder}`,
                 borderRadius: '8px',
-                fontSize: '13px',
+                fontSize: `${13 * fontScale}px`,
               }}
               formatter={(value: number) => [formatShortDuration(value), '时长']}
             />
-            <Legend wrapperStyle={{ fontSize: '11px', color: mutedColor }} />
+            <Legend wrapperStyle={{ fontSize: `${11 * fontScale}px`, color: mutedColor }} />
             {lines.map((line) => (
               <Line
                 key={line.key}

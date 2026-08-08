@@ -50,8 +50,19 @@ interface LanshanApi {
   applyMakeup: (date: string, subject: string) => Promise<{ ok: boolean; message: string; amount: number }>
   undoMakeup: (date: string, subject: string) => Promise<void>
   getDailyBreakdown: (date: string) => Promise<any[]>
-  getAchievements: () => Promise<any[]>
-  getNewUnlocks: () => Promise<string[]>
+
+  // 刻章系统：定义 / 总览（含回放）/ 每日记录 / 佩戴位 / 新刻章轮询
+  getSealDefs: () => Promise<any[]>
+  getSealsOverview: (date?: string) => Promise<{
+    cumulative: { id: string; unlocked: boolean; unlocked_at: string | null; progress: number; progress_max: number }[]
+    daily: { id: string; earned: boolean; hint: string }[]
+    slots: { slot: number; seal_id: string; date: string | null }[]
+    dailyEverIds: string[]
+  }>
+  getDailySealRecords: (date: string) => Promise<string[]>
+  getNewSeals: () => Promise<{ cumulative: string[]; daily: string[] }>
+  setSealSlot: (slot: number, sealId: string) => Promise<{ ok: boolean; message: string }>
+  clearSealSlot: (slot: number) => Promise<void>
   getSubjectColor: (subject: string) => Promise<string>
   getSubjectIcon: (subject: string) => Promise<string>
   getSubjects: () => Promise<string[]>

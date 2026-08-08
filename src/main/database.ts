@@ -58,14 +58,6 @@ export interface ClassificationRule {
   priority: number
 }
 
-export interface AchievementProgress {
-  id: string
-  unlocked: boolean
-  unlocked_at: string | null
-  progress: number
-  progress_max: number
-}
-
 export interface Settings {
   [key: string]: string | number | boolean
 }
@@ -109,6 +101,10 @@ const DEFAULT_SETTINGS: Record<string, string | number | boolean> = {
   focus_schedule_enabled: false,  // 专注日程模式开关（到点自动进入/结束专注）
   focus_schedule_mode: 'loose',  // 宽松：手动退出后本时段不重入；strict：手动退出后 30 秒重入
   focus_schedule: JSON.stringify(DEFAULT_FOCUS_SCHEDULE),  // 学习时段 JSON：[{ s: 'HH:MM', e: 'HH:MM' }]
+  home_font_scale: 1,        // 主页数据字号倍率（0.7–1.5）
+  home_border_width: 1,      // 卡片边框粗细（px，0–4）
+  home_border_radius: 16,    // 卡片圆角（px，0–28）
+  home_card_padding: 24,     // 卡片内边距（px，8–40）
 }
 
 export async function initDatabase(): Promise<void> {
@@ -138,36 +134,9 @@ export async function initDatabase(): Promise<void> {
   
   createTables()
 
-  // Force achievement table rebuild if ach_version < 4
-  const achVer = getSetting('ach_version')
-  if (achVer !== '4') {
-    db?.run('DELETE FROM achievements')
-    const all = [
-      { id:'total-30h',m:30*3600 },{ id:'total-100h',m:100*3600 },{ id:'total-250h',m:250*3600 },
-      { id:'streak-3',m:3 },{ id:'streak-7',m:7 },{ id:'streak-14',m:14 },
-      { id:'phy-20',m:20*3600 },{ id:'phy-60',m:60*3600 },{ id:'phy-100',m:100*3600 },
-      { id:'math-15',m:15*3600 },{ id:'math-50',m:50*3600 },{ id:'math-85',m:85*3600 },
-      { id:'eng-20',m:20*3600 },{ id:'eng-70',m:70*3600 },{ id:'eng-120',m:120*3600 },
-      { id:'daily-6h',m:6*3600 },{ id:'daily-8h',m:8*3600 },
-      { id:'morning-5',m:5 },{ id:'morning-10',m:10 },{ id:'morning-18',m:18 },
-      { id:'night-5',m:5 },{ id:'night-10',m:10 },{ id:'night-18',m:18 },
-      { id:'focus-2h-3',m:3 },{ id:'focus-2h-7',m:7 },{ id:'focus-3h-3',m:3 },
-      { id:'comeback-6h',m:1 },{ id:'comeback-8h',m:1 },
-      { id:'burst-phy',m:1 },{ id:'burst-math',m:1 },{ id:'burst-eng',m:1 },
-      { id:'balanced',m:1 },{ id:'dawn-dusk',m:1 },
-      { id:'over-phy-10',m:10 },{ id:'over-math-10',m:10 },{ id:'over-eng-10',m:10 },
-      { id:'triple-over',m:1 },{ id:'triple-3',m:3 },
-    ]
-    const stmt = db.prepare('INSERT INTO achievements (id, unlocked, progress, progress_max) VALUES (?, 0, 0, ?)')
-    for (const a of all) stmt.run([a.id, a.m])
-    stmt.free()
-    setSetting('ach_version', '4')
-    console.log('[db] Achievement table rebuilt — 38 v4 achievements')
-  }
-
   seedDefaults()
   cleanupOldUnclassified()
-  migrateAchievementsV2()
+  migrateSealsV5()
 
   // Migrate old '娱乐' subject data to '休闲' (v3)
   db?.run("UPDATE merged_segments SET subject = '休闲' WHERE subject = '娱乐'")
@@ -278,6 +247,25 @@ function createTables(): void {
     )
   `)
 
+  // 每日刻章逐日记录（回放数据源：今天实时判定写入，历史日期查看时按数据重算）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS daily_seal_records (
+      date TEXT NOT NULL,
+      seal_id TEXT NOT NULL,
+      earned_at TEXT NOT NULL,
+      PRIMARY KEY (date, seal_id)
+    )
+  `)
+
+  // 佩戴位（4×2 八个格子）：date=NULL 为累积刻章（永久），date=获得日 为每日刻章（仅当天）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS seal_slots (
+      slot INTEGER PRIMARY KEY,
+      seal_id TEXT NOT NULL,
+      date TEXT
+    )
+  `)
+
   // Indexes for performance
   db.run('CREATE INDEX IF NOT EXISTS idx_raw_events_timestamp ON raw_events(timestamp)')
   db.run('CREATE INDEX IF NOT EXISTS idx_merged_date ON merged_segments(date)')
@@ -330,41 +318,41 @@ function cleanupOldUnclassified(): void {
   console.log('[db] Cleaned up old unclassified entries (db v2)')
 }
 
-/** 迁移旧数据库中的成就到 v2 版本 */
-function migrateAchievementsV2(): void {
+/**
+ * 刻章系统 v5 迁移：
+ * achievements 表从 38 枚扁平成就收敛为 16 枚累积刻章（保留同名刻章的已解锁状态与解锁时间），
+ * 每日刻章不再存 achievements——由 daily_seal_records 逐日记录（历史日期查看时按数据重算回放）。
+ */
+function migrateSealsV5(): void {
   if (!db) return
+  if (getSetting('ach_version') === '5') return
 
-  // Check if we have exactly 38 achievements with the right IDs
-  const count = db.exec('SELECT COUNT(*) FROM achievements')
-  const c = (count?.[0]?.values?.[0]?.[0] as number) || 0
-  const ver = getSetting('ach_version')
-  if (c === 38 && ver === '4') return
-
-  // Force rebuild
-  db.run('DELETE FROM achievements')
-
-  // Insert all 38 new achievements
-  const all = [
-    { id:'total-30h',pm:30*3600 },{ id:'total-100h',pm:100*3600 },{ id:'total-250h',pm:250*3600 },
-    { id:'streak-3',pm:3 },{ id:'streak-7',pm:7 },{ id:'streak-14',pm:14 },
-    { id:'phy-20',pm:20*3600 },{ id:'phy-60',pm:60*3600 },{ id:'phy-100',pm:100*3600 },
-    { id:'math-15',pm:15*3600 },{ id:'math-50',pm:50*3600 },{ id:'math-85',pm:85*3600 },
-    { id:'eng-20',pm:20*3600 },{ id:'eng-70',pm:70*3600 },{ id:'eng-120',pm:120*3600 },
-    { id:'daily-6h',pm:6*3600 },{ id:'daily-8h',pm:8*3600 },
-    { id:'morning-5',pm:5 },{ id:'morning-10',pm:10 },{ id:'morning-18',pm:18 },
-    { id:'night-5',pm:5 },{ id:'night-10',pm:10 },{ id:'night-18',pm:18 },
-    { id:'focus-2h-3',pm:3 },{ id:'focus-2h-7',pm:7 },{ id:'focus-3h-3',pm:3 },
-    { id:'comeback-6h',pm:1 },{ id:'comeback-8h',pm:1 },
-    { id:'burst-phy',pm:1 },{ id:'burst-math',pm:1 },{ id:'burst-eng',pm:1 },
-    { id:'balanced',pm:1 },{ id:'dawn-dusk',pm:1 },
-    { id:'over-phy-10',pm:10 },{ id:'over-math-10',pm:10 },{ id:'over-eng-10',pm:10 },
-    { id:'triple-over',pm:1 },{ id:'triple-3',pm:3 },
+  // 16 枚累积刻章（id → 阈值）
+  const CUMULATIVE: [string, number][] = [
+    ['total-30h', 30 * 3600], ['total-100h', 100 * 3600], ['total-250h', 250 * 3600],
+    ['streak-3', 3], ['streak-7', 7], ['streak-14', 14],
+    ['phy-20', 20 * 3600], ['phy-60', 60 * 3600], ['phy-100', 100 * 3600],
+    ['math-15', 15 * 3600], ['math-50', 50 * 3600], ['math-85', 85 * 3600],
+    ['eng-20', 20 * 3600], ['eng-70', 70 * 3600], ['eng-120', 120 * 3600],
+    ['triple-3', 3],
   ]
-  for (const a of all) {
-    db.run('INSERT INTO achievements (id, unlocked, progress, progress_max) VALUES (?, 0, 0, ?)', [a.id, a.pm])
+
+  // 保留旧表中同名累积刻章的解锁状态
+  const old = new Map<string, { unlocked: number; unlocked_at: string | null }>()
+  const rows = db.exec('SELECT id, unlocked, unlocked_at FROM achievements')
+  for (const r of rows?.[0]?.values || []) {
+    old.set(r[0] as string, { unlocked: r[1] as number, unlocked_at: r[2] as string | null })
   }
-  setSetting('db_version', '4')
-  console.log('[db] Achievement v4 migration complete — 38 achievements seeded')
+
+  db.run('DELETE FROM achievements')
+  const stmt = db.prepare('INSERT INTO achievements (id, unlocked, unlocked_at, progress, progress_max) VALUES (?, ?, ?, 0, ?)')
+  for (const [id, max] of CUMULATIVE) {
+    const o = old.get(id)
+    stmt.run([id, o?.unlocked ?? 0, o?.unlocked_at ?? null, max])
+  }
+  stmt.free()
+  setSetting('ach_version', '5')
+  console.log('[db] Seal v5 migration complete — achievements → 16 cumulative seals')
 }
 
 export function getDb(): SqlJsDatabase {
@@ -1000,319 +988,6 @@ export function getYearHeatmapData(year: number): { date: string; total: number 
     data.push({ date: ds, total: map.get(ds) || 0 })
   }
   return data
-}
-
-export interface AchievementInfo {
-  id: string
-  unlocked: boolean
-  unlocked_at: string | null
-  progress: number
-  progress_max: number
-}
-
-export function getAchievementProgress(): AchievementInfo[] {
-  // Compute everything from LIVE data — ignore DB's cached unlocked/progress
-  const rows = db?.exec('SELECT id FROM achievements ORDER BY id')
-  if (!rows || rows.length === 0) return []
-
-  const totalSeconds = getTotalSecondsAllTime()
-  const consecDays = getConsecutiveDays()
-  const subjSec: Record<string, number> = {
-    '物理': getSubjectTotal('物理'),
-    '数学': getSubjectTotal('数学'),
-    '英语': getSubjectTotal('英语'),
-  }
-
-  // Count exceeded days per subject
-  const exceedDays: Record<string, number> = {}
-  for (const s of ['物理', '数学', '英语']) {
-    const r = db?.exec("SELECT COUNT(*) FROM daily_stats WHERE subject = ? AND exceeded = 1", [s])
-    exceedDays[s] = (r?.[0]?.values?.[0]?.[0] as number) || 0
-  }
-
-  // Count days where all 3 subjects exceeded
-  const grandSlam = db?.exec(
-    "SELECT COUNT(*) FROM (SELECT date FROM daily_stats WHERE subject IN ('物理','数学','英语') AND exceeded = 1 GROUP BY date HAVING COUNT(*) >= 3)"
-  )
-  const grandSlamCount = (grandSlam?.[0]?.values?.[0]?.[0] as number) || 0
-
-  const today = new Date().toISOString().split('T')[0]
-  const todayStats = getDailyStats(today)
-  const todayTotal = todayStats.filter(d => ['物理','数学','英语'].includes(d.subject)).reduce((s, d) => s + d.total_seconds, 0)
-
-  const pm: Record<string, number> = {
-    'total-30h':30*3600,'total-100h':100*3600,'total-250h':250*3600,
-    'streak-3':3,'streak-7':7,'streak-14':14,
-    'phy-20':20*3600,'phy-60':60*3600,'phy-100':100*3600,
-    'math-15':15*3600,'math-50':50*3600,'math-85':85*3600,
-    'eng-20':20*3600,'eng-70':70*3600,'eng-120':120*3600,
-    'daily-6h':6*3600,
-    'daily-8h':8*3600,
-    'morning-5':5,'morning-10':10,'morning-18':18,
-    'night-5':5,'night-10':10,'night-18':18,
-    'focus-2h-3':3,'focus-2h-7':7,'focus-3h-3':3,
-    'comeback-6h':1,'comeback-8h':1,
-    'burst-phy':1,'burst-math':1,'burst-eng':1,
-    'balanced':1,'dawn-dusk':1,
-    'over-phy-10':10,'over-math-10':10,'over-eng-10':10,
-    'triple-over':1,'triple-3':3,
-  }
-
-  const results: AchievementInfo[] = []
-  for (const row of rows[0].values) {
-    const id = row[0] as string
-    const progressMax = pm[id] || 0
-    let progress = 0
-
-    switch (id) {
-      case 'total-30h': case 'total-100h': case 'total-250h':
-        progress = totalSeconds; break
-      case 'streak-3': case 'streak-7': case 'streak-14':
-        progress = consecDays; break
-      case 'phy-20': case 'phy-60': case 'phy-100':
-        progress = subjSec['物理'] || 0; break
-      case 'math-15': case 'math-50': case 'math-85':
-        progress = subjSec['数学'] || 0; break
-      case 'eng-20': case 'eng-70': case 'eng-120':
-        progress = subjSec['英语'] || 0; break
-      case 'daily-6h': case 'daily-8h': progress = todayTotal; break
-      case 'morning-5': case 'morning-10': case 'morning-18':
-        progress = countMorningDays(); break
-      case 'night-5': case 'night-10': case 'night-18':
-        progress = countNightDays(); break
-      case 'focus-2h-3': case 'focus-2h-7':
-        progress = countFocusDays(120 * 60); break
-      case 'focus-3h-3':
-        progress = countFocusDays(180 * 60); break
-      case 'comeback-6h': progress = countComebackDays(6 * 3600); break
-      case 'comeback-8h': progress = countComebackDays(8 * 3600); break
-      case 'burst-phy': progress = countBurstDays('物理', 240 * 60) >= 1 ? 1 : 0; break
-      case 'burst-math': progress = countBurstDays('数学', 240 * 60) >= 1 ? 1 : 0; break
-      case 'burst-eng': progress = countBurstDays('英语', 240 * 60) >= 1 ? 1 : 0; break
-      case 'balanced': progress = countBalancedDays() >= 1 ? 1 : 0; break
-      case 'dawn-dusk': progress = countDawnDuskDays() >= 1 ? 1 : 0; break
-      case 'over-phy-10': progress = exceedDays['物理'] || 0; break
-      case 'over-math-10': progress = exceedDays['数学'] || 0; break
-      case 'over-eng-10': progress = exceedDays['英语'] || 0; break
-      case 'triple-over': progress = grandSlamCount; break
-      case 'triple-3': progress = countConsecutiveTripleDays() >= 3 ? 3 : countConsecutiveTripleDays(); break
-    }
-
-    const unlocked = progress >= progressMax && progressMax > 0
-    const oldRow = db?.exec('SELECT unlocked, unlocked_at FROM achievements WHERE id = ?', [id])
-    let unlockedAt: string | null = null
-    if (oldRow && oldRow.length > 0 && oldRow[0].values.length > 0) {
-      unlockedAt = oldRow[0].values[1] as string | null
-      const wasUnlocked = Boolean(oldRow[0].values[0])
-      if (unlocked && !wasUnlocked) {
-        unlockedAt = new Date().toISOString()
-        db?.run('UPDATE achievements SET unlocked=1, unlocked_at=?, progress=? WHERE id=?', [unlockedAt, progress, id])
-      } else {
-        db?.run('UPDATE achievements SET unlocked=?, progress=? WHERE id=?', [unlocked ? 1 : 0, progress, id])
-      }
-    }
-
-    results.push({ id, unlocked, unlocked_at: unlockedAt, progress, progress_max: progressMax })
-  }
-
-  save()
-  return results
-}
-
-/** Check all locked achievements and unlock any that meet conditions */
-export function checkAndUnlockAchievements(): string[] {
-  const newlyUnlocked: string[] = []
-  const rows = db?.exec('SELECT id, unlocked, progress, progress_max FROM achievements')
-  if (!rows || rows.length === 0) return newlyUnlocked
-
-  const totalSeconds = getTotalSecondsAllTime()
-  const consecDays = getConsecutiveDays()
-  const today = new Date().toISOString().split('T')[0]
-  const todayStats = getDailyStats(today)
-  const todayMap: Record<string, number> = {}
-  for (const s of todayStats) { todayMap[s.subject] = s.total_seconds }
-  const todayTotal = Object.entries(todayMap).filter(([k]) => ['物理','数学','英语'].includes(k)).reduce((a, [,v]) => a + v, 0)
-
-  const subjMap: Record<string, number> = {
-    '物理': getSubjectTotal('物理'),
-    '数学': getSubjectTotal('数学'),
-    '英语': getSubjectTotal('英语'),
-  }
-
-  const now = new Date().toISOString()
-
-  // Grand slam count for triple-over — count of days all 3 subjects exceeded
-  const grandSlam = db?.exec(
-    "SELECT COUNT(*) FROM (SELECT date FROM daily_stats WHERE subject IN ('物理','数学','英语') AND exceeded = 1 GROUP BY date HAVING COUNT(*) >= 3)"
-  )
-  const grandSlamCount = (grandSlam?.[0]?.values?.[0]?.[0] as number) || 0
-
-  for (const row of rows[0].values) {
-    const id = row[0] as string
-    const unlocked = Boolean(row[1])
-    if (unlocked) continue
-
-    let shouldUnlock = false
-    switch (id) {
-      case 'total-30h': shouldUnlock = totalSeconds >= 30 * 3600; break
-      case 'total-100h': shouldUnlock = totalSeconds >= 100 * 3600; break
-      case 'total-250h': shouldUnlock = totalSeconds >= 250 * 3600; break
-      case 'streak-3': shouldUnlock = consecDays >= 3; break
-      case 'streak-7': shouldUnlock = consecDays >= 7; break
-      case 'streak-14': shouldUnlock = consecDays >= 14; break
-      case 'phy-20': shouldUnlock = subjMap['物理'] >= 20 * 3600; break
-      case 'phy-60': shouldUnlock = subjMap['物理'] >= 60 * 3600; break
-      case 'phy-100': shouldUnlock = subjMap['物理'] >= 100 * 3600; break
-      case 'math-15': shouldUnlock = subjMap['数学'] >= 15 * 3600; break
-      case 'math-50': shouldUnlock = subjMap['数学'] >= 50 * 3600; break
-      case 'math-85': shouldUnlock = subjMap['数学'] >= 85 * 3600; break
-      case 'eng-20': shouldUnlock = subjMap['英语'] >= 20 * 3600; break
-      case 'eng-70': shouldUnlock = subjMap['英语'] >= 70 * 3600; break
-      case 'eng-120': shouldUnlock = subjMap['英语'] >= 120 * 3600; break
-      case 'daily-6h': shouldUnlock = todayTotal >= 6 * 3600; break
-      case 'daily-8h': shouldUnlock = todayTotal >= 8 * 3600; break
-      case 'over-phy-10': shouldUnlock = countOverachieveDays('物理') >= 10; break
-      case 'over-math-10': shouldUnlock = countOverachieveDays('数学') >= 10; break
-      case 'over-eng-10': shouldUnlock = countOverachieveDays('英语') >= 10; break
-      case 'morning-5': shouldUnlock = countMorningDays() >= 5; break
-      case 'morning-10': shouldUnlock = countMorningDays() >= 10; break
-      case 'morning-18': shouldUnlock = countMorningDays() >= 18; break
-      case 'night-5': shouldUnlock = countNightDays() >= 5; break
-      case 'night-10': shouldUnlock = countNightDays() >= 10; break
-      case 'night-18': shouldUnlock = countNightDays() >= 18; break
-      case 'focus-2h-3': shouldUnlock = countFocusDays(120 * 60) >= 3; break
-      case 'focus-2h-7': shouldUnlock = countFocusDays(120 * 60) >= 7; break
-      case 'focus-3h-3': shouldUnlock = countFocusDays(180 * 60) >= 3; break
-      case 'comeback-6h': shouldUnlock = countComebackDays(6 * 3600) >= 1; break
-      case 'comeback-8h': shouldUnlock = countComebackDays(8 * 3600) >= 1; break
-      case 'burst-phy': shouldUnlock = countBurstDays('物理', 240 * 60) >= 1; break
-      case 'burst-math': shouldUnlock = countBurstDays('数学', 240 * 60) >= 1; break
-      case 'burst-eng': shouldUnlock = countBurstDays('英语', 240 * 60) >= 1; break
-      case 'balanced': shouldUnlock = countBalancedDays() >= 1; break
-      case 'dawn-dusk': shouldUnlock = countDawnDuskDays() >= 1; break
-      case 'triple-over': shouldUnlock = grandSlamCount >= 1; break
-      case 'triple-3': shouldUnlock = countConsecutiveTripleDays() >= 3; break
-    }
-
-    if (shouldUnlock) {
-      db?.run('UPDATE achievements SET unlocked = 1, unlocked_at = ? WHERE id = ?', [now, id])
-      newlyUnlocked.push(id)
-    }
-  }
-
-  if (newlyUnlocked.length > 0) save()
-  return newlyUnlocked
-}
-
-function countOverachieveDays(subject: string): number {
-  const r = db?.exec('SELECT COUNT(*) FROM daily_stats WHERE subject = ? AND exceeded = 1', [subject])
-  if (r && r.length > 0 && r[0].values[0]) return r[0].values[0][0] as number
-  return 0
-}
-
-function countConsecutiveTripleDays(): number {
-  const r = db?.exec(`SELECT date FROM daily_stats WHERE subject IN ('物理','数学','英语') GROUP BY date HAVING SUM(CASE WHEN exceeded=1 THEN 1 ELSE 0 END)=3 ORDER BY date ASC`)
-  if (!r || r.length === 0) return 0
-  const dates = r[0].values.map(x => x[0] as string)
-  let maxStreak = 0, cur = 1
-  for (let i = 1; i < dates.length; i++) {
-    const prev = new Date(dates[i-1]), curr = new Date(dates[i])
-    if ((curr.getTime() - prev.getTime()) / 86400000 === 1) cur++
-    else { maxStreak = Math.max(maxStreak, cur); cur = 1 }
-  }
-  maxStreak = Math.max(maxStreak, cur)
-  return maxStreak
-}
-
-/** Get IDs of achievements whose progress has reached the threshold but aren't yet unlocked */
-export function getPendingUnlocks(): string[] {
-  const unlocked: string[] = []
-  const rows = db?.exec('SELECT id, unlocked, progress, progress_max FROM achievements')
-  if (!rows || rows.length === 0) return unlocked
-  const now = new Date().toISOString()
-  for (const row of rows[0].values) {
-    const id = row[0] as string
-    const unlockedFlag = Boolean(row[1])
-    if (unlockedFlag) continue
-    const progress = row[2] as number
-    const progressMax = row[3] as number
-    if (progress >= progressMax) {
-      db?.run('UPDATE achievements SET unlocked = 1, unlocked_at = ? WHERE id = ?', [now, id])
-      unlocked.push(id)
-    }
-  }
-  if (unlocked.length > 0) save()
-  return unlocked
-}
-
-/** 晨行天数：首段学习 < 07:00 */
-export function countMorningDays(): number {
-  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','其他')`)
-  return (r?.[0]?.values?.[0]?.[0] as number) || 0
-}
-
-/** 夜航天数：末段学习 > 22:00 */
-export function countNightDays(): number {
-  const r = db?.exec(`SELECT COUNT(DISTINCT date) FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','其他')`)
-  return (r?.[0]?.values?.[0]?.[0] as number) || 0
-}
-
-/** 朝暮行天数：同一天同时满足晨行+夜航 */
-export function countDawnDuskDays(): number {
-  const morning = new Set<string>()
-  const mr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(start_time,12,5) < '07:00' AND subject NOT IN ('休闲','其他')`)
-  if (mr) for (const r of mr[0]?.values || []) morning.add(r[0] as string)
-  const night = new Set<string>()
-  const nr = db?.exec(`SELECT DISTINCT date FROM merged_segments WHERE substr(end_time,12,5) > '22:00' AND subject NOT IN ('休闲','其他')`)
-  if (nr) for (const r of nr[0]?.values || []) night.add(r[0] as string)
-  let count = 0
-  for (const d of morning) { if (night.has(d)) count++ }
-  return count
-}
-
-/** 有连续学习段 ≥ minSeconds 的天数 */
-export function countFocusDays(minSeconds: number): number {
-  const r = db?.exec('SELECT COUNT(DISTINCT date) FROM merged_segments WHERE duration >= ? AND subject NOT IN (\'休闲\',\'其他\')', [minSeconds])
-  return (r?.[0]?.values?.[0]?.[0] as number) || 0
-}
-
-/** 单个科目单日最大秒数 */
-export function maxDailySubjectSeconds(subject: string): number {
-  const r = db?.exec('SELECT COALESCE(MAX(total_seconds),0) FROM daily_stats WHERE subject = ?', [subject])
-  return (r?.[0]?.values?.[0]?.[0] as number) || 0
-}
-
-/** 某科目单日 ≥ minSeconds 的天数 */
-export function countBurstDays(subject: string, minSeconds: number): number {
-  const r = db?.exec('SELECT COUNT(*) FROM daily_stats WHERE subject = ? AND total_seconds >= ?', [subject, minSeconds])
-  return (r?.[0]?.values?.[0]?.[0] as number) || 0
-}
-
-/** 均衡日：三科都>=目标且都<目标×1.5 */
-export function countBalancedDays(): number {
-  const r = db?.exec(`SELECT COUNT(*) FROM (SELECT date FROM daily_stats WHERE subject IN ('物理','数学','英语') GROUP BY date HAVING SUM(CASE WHEN achieved=1 AND exceeded=0 THEN 1 ELSE 0 END)=3)`)
-  return (r?.[0]?.values?.[0]?.[0] as number) || 0
-}
-
-/** 逆袭天数：当天核心三科学习 >= minSeconds 且前一天 < 1h（或没有记录） */
-export function countComebackDays(minSeconds: number): number {
-  const r = db?.exec(`
-    SELECT COUNT(*) FROM (
-      SELECT date, SUM(total_seconds) as day_total
-      FROM daily_stats
-      WHERE subject IN ('物理','数学','英语')
-      GROUP BY date
-    ) a
-    WHERE a.day_total >= ?
-    AND NOT EXISTS (
-      SELECT 1 FROM daily_stats b
-      WHERE b.date = date(a.date, '-1 day')
-      AND b.subject IN ('物理','数学','英语')
-      GROUP BY b.date
-      HAVING SUM(b.total_seconds) >= 3600
-    )
-  `, [minSeconds])
-  return (r?.[0]?.values?.[0]?.[0] as number) || 0
 }
 
 export function exportRules(): string {

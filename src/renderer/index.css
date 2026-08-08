@@ -23,6 +23,15 @@
   --heatmap-1: #bbf7d0;
   --heatmap-2: #4ade80;
   --heatmap-3: #16a34a;
+  /* 刻章系统：印泥红 + 纸面 */
+  --seal-red: #c0392b;
+  --seal-paper-a: #fff6f1;
+  --seal-paper-b: #ffe4d3;
+  /* 主页显示（设置页可调）：数据字号倍率 + 卡片边框/圆角/内边距 */
+  --dash-font-scale: 1;
+  --dash-border-width: 1px;
+  --dash-border-radius: 16px;
+  --dash-card-padding: 24px;
 }
 
 /* ─── Dark theme ─── */
@@ -48,6 +57,10 @@
   --heatmap-1: #064e3b;
   --heatmap-2: #047857;
   --heatmap-3: #34d399;
+  /* 刻章系统：暗色下的印泥红 + 深纸面 */
+  --seal-red: #e26d5a;
+  --seal-paper-a: #2e1510;
+  --seal-paper-b: #421e16;
 }
 
 html, body, #root {
@@ -106,16 +119,26 @@ body {
 /* ─── Card utility ─── */
 .card {
   background: var(--bg-card);
-  border-radius: 16px;
-  padding: 24px;
+  border-radius: var(--dash-border-radius, 16px);
+  padding: var(--dash-card-padding, 24px);
   box-shadow: var(--shadow);
-  border: 1px solid var(--border);
+  border: var(--dash-border-width, 1px) solid var(--border);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .card:hover {
   border-color: var(--border-light);
 }
+
+/* ─── 主页字号缩放（设置页可调）：非分层规则优先于 Tailwind v4 的 @layer 工具类，
+   故 .dash-scale 作用域内可覆盖 text-* 字号类；内联 calc() 与图表 JS 字号另在组件内乘倍率 ─── */
+.dash-scale .text-\[9px\] { font-size: calc(9px * var(--dash-font-scale, 1)); }
+.dash-scale .text-\[10px\] { font-size: calc(10px * var(--dash-font-scale, 1)); }
+.dash-scale .text-\[11px\] { font-size: calc(11px * var(--dash-font-scale, 1)); }
+.dash-scale .text-xs { font-size: calc(12px * var(--dash-font-scale, 1)); }
+.dash-scale .text-sm { font-size: calc(14px * var(--dash-font-scale, 1)); }
+.dash-scale .text-base { font-size: calc(16px * var(--dash-font-scale, 1)); }
+.dash-scale .text-lg { font-size: calc(18px * var(--dash-font-scale, 1)); }
 
 /* ─── Encouragement ─── */
 .encouragement {
@@ -159,6 +182,34 @@ body {
 
 .toggle.active::after {
   transform: translateX(18px);
+}
+
+/* ─── 设置页滑块（深浅主题通用） ─── */
+input[type='range'].settings-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--border-light);
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range'].settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+input[type='range'].settings-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
 }
 
 /* ─── Focus overlay（专注桌面）动画 ─── */
@@ -449,4 +500,412 @@ input[type='range'].cyber-slider::-webkit-slider-thumb {
 .week-bar:hover {
   transform: translateY(-2px);
   filter: brightness(1.25);
+}
+
+/* ─── 刻章系统（印章 / 收藏格） ─── */
+
+/* 册页底色：淡淡的印泥晕染 + 墨绿晕染 */
+.album-bg {
+  background:
+    radial-gradient(600px 300px at 12% 4%, rgba(192, 57, 43, 0.045), transparent 60%),
+    radial-gradient(500px 300px at 90% 96%, rgba(5, 150, 105, 0.05), transparent 60%);
+}
+
+/* 章节标题红点 */
+.seal-section-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--accent);
+  display: inline-block;
+  transform: rotate(45deg);
+}
+
+/* 册页 Logo：红底方印 */
+.seal-logo {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  background: linear-gradient(145deg, var(--seal-paper-a), var(--seal-paper-b));
+  border: 2px solid rgba(192, 57, 43, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(192, 57, 43, 0.12), 0 2px 8px rgba(192, 57, 43, 0.15);
+  flex-shrink: 0;
+}
+
+/* 统计胶囊 */
+.stat-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 9999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+.stat-pill-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.stat-pill-value {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 分组标题 */
+.seal-group-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.seal-group-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* 刻章网格：随窗口自适应列数 */
+.seal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+@media (min-width: 1100px) {
+  .seal-grid { grid-template-columns: repeat(6, 1fr); }
+}
+
+@media (min-width: 1400px) {
+  .seal-grid { grid-template-columns: repeat(8, 1fr); }
+}
+
+/* 主页回放小章 */
+.replay-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.replay-chip.got {
+  background: linear-gradient(145deg, var(--seal-paper-a), var(--seal-paper-b));
+  border-color: rgba(192, 57, 43, 0.3);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* 收藏格单格：圆形印泥章 + 名称 + 条件 */
+.seal-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 14px 8px 12px;
+  border-radius: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  text-align: center;
+  min-width: 0;
+  transition: transform 0.18s, border-color 0.18s, box-shadow 0.18s;
+}
+
+.seal-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-light);
+}
+
+.seal-tile.dim {
+  opacity: 0.55;
+}
+
+/* 圆形印章本体：未获得 = 灰色剪影；获得 = 印泥朱印 */
+.seal-medallion {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  flex-shrink: 0;
+  border: 2px dashed var(--border-light);
+  background: var(--bg-elevated);
+}
+
+.seal-medallion::after {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  border: 1px dashed var(--border-light);
+  pointer-events: none;
+}
+
+.seal-tile.locked .seal-medallion {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+/* 锁角标：小圆底 + 锁 */
+.seal-lock {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.seal-tile.got .seal-medallion {
+  border: 2px solid var(--seal-red);
+  background: linear-gradient(145deg, var(--seal-paper-a), var(--seal-paper-b));
+  color: var(--seal-red);
+  box-shadow: inset 0 0 0 1px rgba(192, 57, 43, 0.15), 0 2px 10px rgba(192, 57, 43, 0.2);
+}
+
+.seal-tile.got .seal-medallion::after {
+  border: 1px solid rgba(192, 57, 43, 0.28);
+}
+
+.seal-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seal-desc {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seal-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seal-progress {
+  width: 100%;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--progress-track);
+  overflow: hidden;
+}
+
+.seal-progress > div {
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--accent);
+  transition: width 0.5s;
+}
+
+/* 角标（"今"） */
+.seal-ribbon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--seal-red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  z-index: 1;
+}
+
+/* 盖印动画：放大 → 压回 → 落定（带轻微旋转） */
+@keyframes seal-stamp-kf {
+  0% { transform: scale(1.7) rotate(-16deg); opacity: 0; }
+  55% { transform: scale(0.92) rotate(3deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+.seal-stamp {
+  animation: seal-stamp-kf 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 今日已获小章 */
+.today-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  background: linear-gradient(145deg, var(--seal-paper-a), var(--seal-paper-b));
+  border: 1.5px solid rgba(192, 57, 43, 0.35);
+  color: var(--text-primary);
+}
+
+/* ─── 佩戴格（4×2 正方形，图标 + 名字竖排） ─── */
+.wear-slot {
+  aspect-ratio: 1 / 1;
+  border-radius: 12px;
+  border: 1.5px dashed var(--border-light);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.18s, transform 0.18s, background 0.18s, color 0.18s;
+}
+
+.wear-slot:hover {
+  border-color: var(--seal-red);
+  background: var(--accent-bg);
+  color: var(--seal-red);
+  transform: translateY(-1px);
+}
+
+.wear-slot.filled {
+  border: 1.5px solid rgba(192, 57, 43, 0.3);
+  background: linear-gradient(145deg, var(--seal-paper-a), var(--seal-paper-b));
+  color: var(--seal-red);
+}
+
+.wear-slot .slot-name {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.1;
+  max-width: 94%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.wear-slot .slot-plus {
+  color: var(--text-muted);
+  font-size: 18px;
+  opacity: 0.6;
+}
+
+.wear-slot .slot-today {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--seal-red);
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── 佩戴选择器 ─── */
+.picker-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  animation: remind-pop 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.picker-panel {
+  background: var(--bg-card);
+  border-radius: 18px;
+  padding: 18px;
+  width: min(500px, 92vw);
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.seal-pick-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 4px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.seal-pick-item:hover {
+  border-color: var(--seal-red);
+  transform: translateY(-1px);
+}
+
+.seal-pick-item.on {
+  border-color: var(--seal-red);
+  background: linear-gradient(145deg, var(--seal-paper-a), var(--seal-paper-b));
+}
+
+.seal-pick-name {
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seal-pick-check {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 11px;
+  color: var(--seal-red);
+  font-weight: 700;
 }

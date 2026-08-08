@@ -85,6 +85,8 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
   const secondaryColor = cssVar('--text-secondary') || '#94a3b8'
   const mutedColor = cssVar('--text-muted') || '#64748b'
   const elevatedBg = cssVar('--bg-elevated') || '#0f172a'
+  // 主页字号倍率（设置页可调）：乘到 SVG 文本/tooltip 等 JS 侧字号上
+  const fontScale = parseFloat(cssVar('--dash-font-scale')) || 1
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -131,7 +133,7 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
                   background: tooltipBg,
                   border: `1px solid ${tooltipBorder}`,
                   borderRadius: '8px',
-                  fontSize: '13px',
+                  fontSize: `${13 * fontScale}px`,
                 }}
                 formatter={(value: number) => [formatShortDuration(value), '时长']}
                 labelFormatter={(label: string) => `${getSubjectIcon(label)} ${label}`}
@@ -142,7 +144,7 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fill={textColor}
-                fontSize="20"
+                fontSize={20 * fontScale}
                 fontWeight="bold"
                 className="tabular-nums"
               >
@@ -154,7 +156,7 @@ export default function SubjectRingChart({ data }: RingChartProps): React.ReactE
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fill={secondaryColor}
-                fontSize="11"
+                fontSize={11 * fontScale}
               >
                 总计
               </text>

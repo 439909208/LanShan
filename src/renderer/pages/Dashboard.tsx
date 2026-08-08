@@ -12,9 +12,18 @@ const C_COLORS: Record<string, string> = {
 import SubjectRingChart from '../components/SubjectRingChart'
 import WeekTrendChart from '../components/WeekTrendChart'
 import HeatmapGrid from '../components/HeatmapGrid'
-import AchievementList from '../components/AchievementList'
-import AchievementModal from '../components/AchievementModal'
+import WearGrid from '../components/WearGrid'
+import SealPicker from '../components/SealPicker'
+import SealIcon from '../components/SealIcon'
 import Timeline from '../components/Timeline'
+import type { SealDefLike, CumulativeLike, DailyLike, SlotLike } from '../sealTypes'
+
+interface SealOverviewLike {
+  cumulative: CumulativeLike[]
+  daily: DailyLike[]
+  slots: SlotLike[]
+  dailyEverIds: string[]
+}
 
 interface SubjectProgress {
   subject: string
@@ -40,7 +49,10 @@ export default function Dashboard(): React.ReactElement {
   const [ringData, setRingData] = useState<{ subject: string; seconds: number }[]>([])
   const [weekData, setWeekData] = useState<any[]>([])
   const [prevWeekData, setPrevWeekData] = useState<any[]>([])
-  const [showAchievements, setShowAchievements] = useState(false)
+  // 刻章系统：佩戴位总览 + 选择器
+  const [sealsData, setSealsData] = useState<SealOverviewLike | null>(null)
+  const [sealDefs, setSealDefs] = useState<SealDefLike[]>([])
+  const [pickerSlot, setPickerSlot] = useState<number | null>(null)
   // 每个框高度可拖拽自定义：null = 默认 flex 比例，拖拽后 = 固定 px（localStorage 持久化）
   // keys: ring/heat/achieve（左列）, data/trend/timeline（右列）, miniRow（数据卡内第一行）
   const [cardHs, setCardHs] = useState<Record<string, number | null>>(() => {
@@ -49,6 +61,14 @@ export default function Dashboard(): React.ReactElement {
       if (v && typeof v === 'object') return v
     } catch { /* 忽略损坏数据 */ }
     return {}
+  })
+  // 左右分栏比例（左栏宽度百分比）：拖中间垂直把手调整，双击恢复默认 1:2（localStorage 持久化）
+  const [colSplit, setColSplit] = useState<number>(() => {
+    try {
+      const v = parseFloat(localStorage.getItem('dashboard-col-split') || '')
+      if (Number.isFinite(v)) return Math.min(45, Math.max(20, v))
+    } catch { /* 忽略损坏数据 */ }
+    return 33.33
   })
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
 
@@ -99,6 +119,33 @@ export default function Dashboard(): React.ReactElement {
     )(e)
   }
 
+  /** 左右分栏把手：拖动调整左/右两栏宽度比例（左栏 20%–45%），松手持久化，双击恢复默认 */
+  function onColHandleDown(e: React.MouseEvent): void {
+    e.preventDefault()
+    const container = (e.currentTarget as HTMLElement).parentElement
+    if (!container) return
+    const startX = e.clientX
+    const startPct = colSplit
+    const totalW = container.getBoundingClientRect().width || 1
+    const onMove = (ev: MouseEvent): void => {
+      const pct = startPct + ((ev.clientX - startX) / totalW) * 100
+      setColSplit(Math.min(45, Math.max(20, pct)))
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      setColSplit(prev => { localStorage.setItem('dashboard-col-split', String(prev)); return prev })
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  /** 恢复左右分栏默认比例 1:2 */
+  function resetColSplit(): void {
+    setColSplit(33.33)
+    localStorage.setItem('dashboard-col-split', '33.33')
+  }
+
   /** 框样式：拖过 = 固定高度，未拖 = 默认 flex 比例 */
   function cardStyle(key: string, defaultFlex: string | number): React.CSSProperties {
     return cardHs[key] != null ? { flex: 'none', height: cardHs[key] as number } : { flex: defaultFlex }
@@ -121,11 +168,15 @@ export default function Dashboard(): React.ReactElement {
     loadData()
     if (!isToday) return
     const dataInterval = setInterval(loadData, 30000)
+    // 30s 轮询新刻章：累积新解锁 + 今天新获得的每日刻章 → 驱动盖印 toast
     const unlockInterval = setInterval(async () => {
-      const ids = await window.lanshan.getNewUnlocks()
-      if (ids.length > 0) {
-        window.dispatchEvent(new CustomEvent('achievement-unlock', { detail: ids }))
-      }
+      try {
+        const n = await window.lanshan.getNewSeals()
+        if (n.cumulative.length > 0 || n.daily.length > 0) {
+          window.dispatchEvent(new CustomEvent('seal-unlock', { detail: n }))
+          void loadData()
+        }
+      } catch { /* 忽略轮询错误 */ }
     }, 30000)
     return () => {
       clearInterval(dataInterval)
@@ -133,12 +184,34 @@ export default function Dashboard(): React.ReactElement {
     }
   }, [selectedDate])
 
+  // 主页显示设置：把 4 个 CSS 变量写到 documentElement（设置页滑块也会实时更新），
+  // 图表组件通过 cssVar() 读到同一份值；值做范围 clamp 防止脏数据。
+  useEffect(() => {
+    window.lanshan.getSettings().then((s) => {
+      const num = (key: string, dflt: number, min: number, max: number): number => {
+        const v = parseFloat(s[key] ?? '')
+        if (!Number.isFinite(v)) return dflt
+        return Math.min(max, Math.max(min, v))
+      }
+      const el = document.documentElement
+      el.style.setProperty('--dash-font-scale', String(num('home_font_scale', 1, 0.7, 1.5)))
+      el.style.setProperty('--dash-border-width', `${num('home_border_width', 1, 0, 4)}px`)
+      el.style.setProperty('--dash-border-radius', `${num('home_border_radius', 16, 0, 28)}px`)
+      el.style.setProperty('--dash-card-padding', `${num('home_card_padding', 24, 8, 40)}px`)
+    })
+  }, [])
+
+  // 刻章定义（佩戴格展示用，主进程为唯一数据源）
+  useEffect(() => {
+    window.lanshan.getSealDefs().then(setSealDefs)
+  }, [])
+
   async function loadData(): Promise<void> {
     try {
       // Rebuild daily_stats for past dates (fixes missing 休闲/其他)
       if (!isToday) await window.lanshan.rebuildDailyStats(selectedDate)
       const settings = await window.lanshan.getSettings()
-      const [coreList, stats, totalTodayVal, consec, maxConsec, totalAll, week, prevWeek, achievements] = await Promise.all([
+      const [coreList, stats, totalTodayVal, consec, maxConsec, totalAll, week, prevWeek, seals] = await Promise.all([
         window.lanshan.getCoreSubjects(),
         window.lanshan.getDailyStats(selectedDate),
         window.lanshan.getTotalSecondsToday(selectedDate),
@@ -147,7 +220,8 @@ export default function Dashboard(): React.ReactElement {
         window.lanshan.getTotalSecondsAllTime(),
         window.lanshan.getWeekStats(7),
         window.lanshan.getWeekStats(14),
-        window.lanshan.getAchievements(),
+        // 刻章总览：今天 = 实时（佩戴位+今日刻章）；历史日期 = 回放（该日刻章 + 截至该日累积进度）
+        window.lanshan.getSealsOverview(isToday ? undefined : selectedDate),
       ])
 
       setCoreSubjects(coreList)
@@ -157,6 +231,7 @@ export default function Dashboard(): React.ReactElement {
       setTotalAllTime(totalAll)
       setWeekData(week)
       setPrevWeekData(prevWeek)
+      setSealsData(seals)
 
       const progressData: SubjectProgress[] = coreList.map((subject: string) => {
         const stat = stats.find((s: any) => s.subject === subject)
@@ -169,7 +244,7 @@ export default function Dashboard(): React.ReactElement {
           achieved: totalSec >= targetSec,
           exceeded: totalSec >= targetSec * 1.5,
           color: C_COLORS[subject] || '#64748b',
-          icon: getSubjectTierIcon(subject, achievements),
+          icon: getSubjectTierIcon(subject, seals?.cumulative ?? []),
         }
       })
       setProgress(progressData)
@@ -187,7 +262,7 @@ export default function Dashboard(): React.ReactElement {
   }
 
   return (
-    <div className="w-full h-full flex flex-col">
+    <div className="dash-scale w-full h-full flex flex-col">
       {/* 日期导航 */}
       <div className="flex items-center gap-3 px-1 py-2 flex-shrink-0">
         <button onClick={() => {
@@ -218,9 +293,9 @@ export default function Dashboard(): React.ReactElement {
           </button>
         )}
       </div>
-      <div className="grid grid-cols-3 gap-5 h-full">
-        {/* 左侧：环形图 + 热力图 + 成就（每个框底部把手可拖拽调高） */}
-        <div className="flex flex-col gap-5 h-full overflow-y-auto">
+      <div className="flex gap-5 h-full">
+        {/* 左侧：环形图 + 热力图 + 刻章（每个框底部把手可拖拽调高；两栏宽度可拖中间把手调整） */}
+        <div className="flex flex-col gap-5 h-full overflow-y-auto min-w-0" style={{ width: `${colSplit}%`, flex: 'none' }}>
           <div className="card flex flex-col min-h-0 overflow-hidden relative group" style={cardStyle('ring', '1.5')}>
             <h3 className="text-sm font-medium mb-3 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
               使用情况
@@ -239,26 +314,93 @@ export default function Dashboard(): React.ReactElement {
             </div>
             <Handle onMouseDown={(e) => onCardHandleDown('heat', e)} title="拖动调整高度" />
           </div>
-          <div
-            className="card flex flex-col min-h-0 overflow-hidden cursor-pointer transition-all hover:border-[var(--border-light)] relative group"
-            style={cardStyle('achieve', '1.2')}
-            onClick={() => setShowAchievements(true)}
-          >
+          <div className="card flex flex-col min-h-0 overflow-hidden relative" style={cardStyle('achieve', '1.2')}>
             <div className="flex items-center justify-between flex-shrink-0 mb-2">
               <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-                🏆 已解锁成就
+                {isToday ? '🕹️ 我的刻章' : `📜 ${selectedDate} 刻章`}
               </h3>
-              <span className="text-xs" style={{ color: 'var(--accent)' }}>查看全部 →</span>
+              <button onClick={() => navigate('/seals')} className="text-xs" style={{ color: 'var(--accent)' }}>刻章册 →</button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              <AchievementList compact />
+            <div className="flex-1 min-h-0 flex flex-col">
+              {sealsData ? (
+                isToday ? (
+                  <>
+                    {/* 佩戴位：4×2 自动适配卡片尺寸（不滚动） */}
+                    <div className="flex-1 min-h-0">
+                      <WearGrid defs={sealDefs} slots={sealsData.slots} onSlotClick={(slot) => setPickerSlot(slot)} />
+                    </div>
+                    <div className="flex items-center justify-between mt-1.5 flex-shrink-0">
+                      <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        今日刻章 {sealsData.daily.filter(d => d.earned).length} 枚
+                      </span>
+                      <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        已集 {sealsData.cumulative.filter(c => c.unlocked).length + sealsData.dailyEverIds.length} / 38
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  /* 历史日期回放：该日盖下的刻章 + 截至该日累积进度（与时间轴/每日数据一致的往回查看） */
+                  <div className="overflow-y-auto min-h-0 pr-1">
+                    <p className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                      该日刻章 · {sealsData.daily.filter(d => d.earned).length} 枚
+                    </p>
+                    {sealsData.daily.filter(d => d.earned).length === 0 ? (
+                      <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>这一天没有获得每日刻章</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {sealsData.daily.filter(d => d.earned).map(s => {
+                          const def = sealDefs.find(x => x.id === s.id)
+                          if (!def) return null
+                          return (
+                            <span key={s.id} className="replay-chip">
+                              <span style={{ display: 'inline-flex' }}>
+                                <SealIcon id={s.id} size={14} />
+                              </span>
+                              {def.name}
+                            </span>
+                          )
+                        })}
+                      </div>
+                    )}
+                    <p className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                      截至当日累积 · {sealsData.cumulative.filter(c => c.unlocked).length} / {sealsData.cumulative.length}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {sealsData.cumulative.filter(c => c.unlocked).map(c => {
+                        const def = sealDefs.find(x => x.id === c.id)
+                        if (!def) return null
+                        return (
+                          <span key={c.id} className="replay-chip got">
+                            <span style={{ display: 'inline-flex' }}>
+                              <SealIcon id={c.id} size={14} />
+                            </span>
+                            {def.name}
+                          </span>
+                        )
+                      })}
+                      {sealsData.cumulative.filter(c => c.unlocked).length === 0 && (
+                        <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>截至该日还没有解锁累积刻章</p>
+                      )}
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="text-xs py-4 text-center w-full" style={{ color: 'var(--text-muted)' }}>加载中…</div>
+              )}
             </div>
-            <Handle onMouseDown={(e) => onCardHandleDown('achieve', e)} title="拖动调整高度" />
           </div>
         </div>
 
+        {/* 左右分栏把手：纯隐形拖拽区（无线条），拖动调整两栏宽度，双击恢复默认 1:2 */}
+        <div
+          onMouseDown={onColHandleDown}
+          onDoubleClick={resetColSplit}
+          className="w-2.5 cursor-col-resize select-none flex-shrink-0"
+          title="拖动调整左右两栏宽度（双击恢复默认）"
+        />
+
         {/* 右侧：数据卡片 + 进度卡片 + 趋势图 — 占 2 列（每个框底部把手可拖拽调高） */}
-        <div className="col-span-2 flex flex-col gap-5">
+        <div className="flex flex-col gap-5 flex-1 min-w-0">
           {/* 数据统计卡：框可拖高；框内 6 个小卡两行之间也可拖动调整比例，内容随高度自动缩放 */}
           <div
             className="card flex flex-col min-h-0 overflow-hidden relative group"
@@ -312,7 +454,17 @@ export default function Dashboard(): React.ReactElement {
           </div>
         </div>
       </div>
-      {showAchievements && <AchievementModal onClose={() => setShowAchievements(false)} />}
+      {pickerSlot !== null && sealsData && sealDefs.length > 0 && (
+        <SealPicker
+          slot={pickerSlot}
+          defs={sealDefs}
+          unlockedCumulative={sealsData.cumulative.filter(c => c.unlocked)}
+          todayEarned={sealsData.daily.filter(d => d.earned).map(d => d.id)}
+          worn={sealsData.slots.find(s => s.slot === pickerSlot) ?? null}
+          onClose={() => setPickerSlot(null)}
+          onChanged={() => void loadData()}
+        />
+      )}
     </div>
   )
 }
@@ -332,11 +484,11 @@ function MiniCard({ icon, value, label, sub }: {
 }): React.ReactElement {
   return (
     <div className="card flex items-center gap-2.5 px-3 h-full min-w-0" style={{ padding: '2.5cqh 12px' }}>
-      <span className="flex-shrink-0" style={{ fontSize: '8.4cqh' }}>{icon}</span>
+      <span className="flex-shrink-0" style={{ fontSize: 'calc(8.4cqh * var(--dash-font-scale, 1))' }}>{icon}</span>
       <div className="min-w-0">
-        <p className="font-bold tabular-nums leading-none truncate" style={{ fontSize: '8cqh' }}>{value}</p>
-        <p className="mt-1 truncate" style={{ fontSize: '4.6cqh', lineHeight: 1.2, color: 'var(--text-secondary)' }}>{label}</p>
-        {sub && <p className="truncate" style={{ fontSize: '3.8cqh', lineHeight: 1.2, color: 'var(--text-muted)' }}>{sub}</p>}
+        <p className="font-bold tabular-nums leading-none truncate" style={{ fontSize: 'calc(8cqh * var(--dash-font-scale, 1))' }}>{value}</p>
+        <p className="mt-1 truncate" style={{ fontSize: 'calc(4.6cqh * var(--dash-font-scale, 1))', lineHeight: 1.2, color: 'var(--text-secondary)' }}>{label}</p>
+        {sub && <p className="truncate" style={{ fontSize: 'calc(3.8cqh * var(--dash-font-scale, 1))', lineHeight: 1.2, color: 'var(--text-muted)' }}>{sub}</p>}
       </div>
     </div>
   )
@@ -360,16 +512,16 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
         <div className="flex items-center gap-1.5 min-w-0">
           <span
             className="rounded-full flex items-center justify-center flex-shrink-0"
-            style={{ width: '8cqh', height: '8cqh', fontSize: '4cqh', background: color + '20', color }}
+            style={{ width: '8cqh', height: '8cqh', fontSize: 'calc(4cqh * var(--dash-font-scale, 1))', background: color + '20', color }}
           >
             {icon}
           </span>
-          <span className="font-semibold truncate" style={{ fontSize: '5.3cqh', lineHeight: 1.1 }}>{subject}</span>
+          <span className="font-semibold truncate" style={{ fontSize: 'calc(5.3cqh * var(--dash-font-scale, 1))', lineHeight: 1.1 }}>{subject}</span>
         </div>
         <span
           className="font-medium rounded-full flex-shrink-0"
           style={{
-            fontSize: '3.8cqh',
+            fontSize: 'calc(3.8cqh * var(--dash-font-scale, 1))',
             lineHeight: 1.1,
             padding: '1.5cqh 3cqh',
             background: achieved
@@ -386,13 +538,13 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
 
       {/* 行2：大时长 */}
       <div className="flex items-baseline gap-1.5 flex-shrink-0">
-        <span className="font-bold tabular-nums" style={{ fontSize: '7cqh', lineHeight: 1.1, color: exceeded ? '#fbbf24' : 'var(--text-primary)' }}>
+        <span className="font-bold tabular-nums" style={{ fontSize: 'calc(7cqh * var(--dash-font-scale, 1))', lineHeight: 1.1, color: exceeded ? '#fbbf24' : 'var(--text-primary)' }}>
           {formatDuration(totalSeconds)}
         </span>
-        <span style={{ fontSize: '3.8cqh', lineHeight: 1.1, color: 'var(--text-secondary)' }}>
+        <span style={{ fontSize: 'calc(3.8cqh * var(--dash-font-scale, 1))', lineHeight: 1.1, color: 'var(--text-secondary)' }}>
           / {formatDuration(targetSeconds)}
         </span>
-        {exceeded && <span style={{ fontSize: '5cqh', color: '#fbbf24' }}>✨</span>}
+        {exceeded && <span style={{ fontSize: 'calc(5cqh * var(--dash-font-scale, 1))', color: '#fbbf24' }}>✨</span>}
       </div>
 
       {/* 行3：进度条（盈余金光） */}
@@ -409,7 +561,7 @@ function SubjectCard({ progress }: { progress: SubjectProgress }): React.ReactEl
       </div>
 
       {/* 行4：状态文字 */}
-      <p className="truncate flex-shrink-0" style={{ fontSize: '3.8cqh', lineHeight: 1.1, color: achieved ? (exceeded ? '#fbbf24' : '#22c55e') : 'var(--text-muted)' }}>
+      <p className="truncate flex-shrink-0" style={{ fontSize: 'calc(3.8cqh * var(--dash-font-scale, 1))', lineHeight: 1.1, color: achieved ? (exceeded ? '#fbbf24' : '#22c55e') : 'var(--text-muted)' }}>
         {!achieved && `还差 ${formatDuration(remaining)} 达标`}
         {achieved && !exceeded && '今日目标已达成 ✓'}
         {exceeded && `超额 ${Math.round((totalSeconds / targetSeconds) * 100)}%！`}

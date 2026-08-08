@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
-import Achievements from './pages/Achievements'
+import Seals from './pages/Seals'
 import Settings from './pages/Settings'
 import Focus from './pages/Focus'
 import FocusOverlay from './pages/FocusOverlay'
@@ -10,6 +10,7 @@ import ToastContainer from './components/Toast'
 const navItems = [
   { path: '/', label: '主页', icon: '🏠' },
   { path: '/focus', label: '专注', icon: '🍅' },
+  { path: '/seals', label: '刻章', icon: '📜' },
   { path: '/settings', label: '设置', icon: '⚙️' },
 ]
 
@@ -155,7 +156,7 @@ function App(): React.ReactElement {
       <main className="flex-1 overflow-y-auto px-6 py-5">
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/achievements" element={<Achievements />} />
+          <Route path="/seals" element={<Seals />} />
           <Route path="/focus" element={<Focus />} />
           <Route path="/focus-overlay" element={<FocusOverlay />} />
           <Route path="/settings" element={<Settings />} />

@@ -13,7 +13,7 @@ Windows 桌面学习伴侣，后台默默记录学习时长，打开就是漂亮
 - 🍅 **专注模式** — 全屏专注桌面 + 窗口级锁定，白名单外窗口自动关闭，Esc/快捷键逃生
 - 📅 **专注日程** — 按每日学习时段到点自动进入/结束专注，宽松/严格双模式，粘贴日程表一键导入
 - 💰 **补签系统** — 超额时长累积为科目盈余池，手动补签最近空缺，格子圆点标记
-- 🏆 **成就系统** — 38 个成就（含隐藏），自动解锁 + Toast 弹窗
+- 📜 **刻章系统** — 38 枚刻章：累积类（永久珍藏/永久佩戴）+ 每日类（当天盖印/仅当天佩戴），主页 4×2 佩戴格，逐日回放任意历史
 - 🖱 **托盘快捷切换** — 右键切换当前科目，图标跟随变色，覆盖模糊条目
 - 🕐 **今日时间轴** — 横向 24h 滚动，智能合并，未分类条目可手动标记
 - 🌗 **浅色/深色主题** — CSS 变量双主题切换
@@ -47,7 +47,7 @@ npm run pack
 │                         │             │                         │
 │  ├─ ActivityWatch 同步  │             │  ├─ 仪表盘              │
 │  ├─ SQLite 数据库       │             │  ├─ 热力图              │
-│  ├─ 系统托盘            │             │  ├─ 成就                │
+│  ├─ 系统托盘            │             │  ├─ 刻章册              │
 │  ├─ 分类引擎            │             │  ├─ 时间轴              │
 │  ├─ 提醒服务            │             │  ├─ 专注模式            │
 │  ├─ 专注覆盖层          │             │  └─ 设置                │
@@ -72,7 +72,7 @@ ActivityWatch（localhost:5600）
 SQLite raw_events → merged_segments → daily_stats
         │
         ▼
-前端 Recharts 渲染 / 成就检测 / 热力图计算
+前端 Recharts 渲染 / 刻章判定 / 热力图计算
 ```
 
 ### 分类系统
@@ -114,22 +114,34 @@ SQLite raw_events → merged_segments → daily_stats
 - 手动补签：点击热力图格子 → 弹窗内按科目补签；补过的格子带圆点、tooltip 显示来源
 - 盈余只影响展示层，不修改原始统计；进度条末尾金光 = 当天该科盈余
 
-### 成就系统（38 个）
+### 刻章系统（38 枚）
 
-| 分组 | 成就 | 检测维度 |
+**累积刻章（16 枚，永久珍藏/永久佩戴）**——只看「截至当日」的累计数据：
+
+| 分组 | 刻章 | 条件 |
 |------|------|---------|
 | 🌱 累计学习 | 破土(30h) → 抽枝(100h) → 成木(250h) | 总时长累计 |
-| 🔥 连续打卡 | 三日火(3d) → 七日焰(7d) → 双周燃(14d) | 连续天数 |
-| ⚡ 物理 / 📐 数学 / 📖 英语 | 初涉→半程→凌顶 | 单科累计时长 |
-| 🌊 单日爆发 | 一日澜山(6h) → 登顶(8h) | 单日总时长 |
-| 🌄 晨行者 | 初曙(5d) → 晨光(10d) → 黎常(18d) | 首段学习 < 7:00 |
-| 🌙 夜航人 | 晚灯(5d) → 夜烛(10d) → 星伴(18d) | 末段学习 > 22:00 |
-| 🎯 极限专注 | 入定(3d≥2h) → 忘我(7d≥2h) → 化境(3d≥3h) | 单段连续学习 |
-| 🐴 逆袭 | 黑马(6h+) → 绝地(8h+) | 前一天少+今天多 |
-| 💥 单科暴击 | 物理/数学/英语暴击 | 单科单日 ≥ 4h |
+| 🔥 连续打卡 | 三日火(3d) → 七日焰(7d) → 双周燃(14d) | 当日连续天数 |
+| ⚡ 物理 / 🔢 数学 / 🔤 英语 | 初涉→半程→凌顶 | 单科累计时长 |
+| 🏆 大满贯 | 三连绝世 | 当日达成连续第 3 个大满贯日 |
+
+**每日刻章（22 枚，当天条件达成即盖印、仅当天佩戴，记录按日保留可回放）**：
+
+| 分组 | 刻章 | 条件（当天） |
+|------|------|---------|
+| 🌊 单日爆发 | 一日澜山(6h) → 登顶(8h) → 大满贯日 | 核心三科 ≥ 6h / 8h / 三科全超额 |
+| 🐴 逆袭 | 黑马(6h+) → 绝地(8h+) | 前一天 < 1h 且当天爆发 |
+| 💥 单科暴击 | 物理/数学/英语暴击 | 单科 ≥ 4h |
 | ⚖️ 均衡日 | 稳行者 | 三科都达标且不超额 |
-| 🌗 朝暮行 | 朝暮行 | 同一天晨行+夜航 |
-| 🎁 隐藏 | 狂热者×3 / 大满贯 / 三连绝世 | 触发后显示 |
+| 🌄 晨行 | 初曙(7:30 前) → 晨光(7:00 前) → 黎明(6:30 前) | 当天开始学习时间 |
+| 🌇 夜航 | 晚灯(21:50 后) → 夜烛(22:20 后) → 星伴(22:50 后) | 当天结束学习时间 |
+| 🎯 极限专注 | 入定(≥2h) → 忘我(≥3h) → 化境(≥4h) | 当天最长连续专注段 |
+| 🔥 狂热者 | 物理/数学/英语狂热者 | 当天该科超额（≥ 目标×1.5） |
+| 🌗 朝暮行 | 朝暮行 | 同一天晨行 + 夜航 |
+
+- 佩戴：统计主页左下角 **4×2 八个正方形格子**（图标+名字），累积刻章永久可戴，每日刻章仅当天有效、跨天自动摘下
+- 逐日回放：主页日期导航回看任意一天盖下的刻章 + 截至该日的累积进度（与时间轴一致）
+- 图标：38 枚刻章全部**自绘 SVG 线稿**（不用 emoji），内容直白、质变式递进——物理=单摆→完整牛顿摆、数学=直线→抛物线→正弦波、英语=书本+词汇量 1000/2500/3500、夜航=2/4/7 颗星、暴击/狂热者=科目字+闪电/火焰
 
 ### 时间轴合并规则
 
@@ -175,7 +187,7 @@ A Windows desktop study companion that quietly tracks your study time in the bac
 - 🍅 **Focus Mode** — fullscreen focus desktop with window-level locking; non-whitelisted windows are closed automatically; Esc / global hotkey escape hatch
 - 📅 **Focus Schedule** — auto enters/exits focus at your daily study slots; loose / strict modes; paste a whole timetable to import
 - 💰 **Makeup System** — over-target time accumulates into a per-subject surplus pool; manually fill gaps in the heatmap; filled cells show a dot marker
-- 🏆 **Achievements** — 38 achievements (incl. hidden ones), auto-unlock with toast notifications
+- 📜 **Seal System** — 38 seals: cumulative ones (permanent collection & wear) + daily ones (stamped on the day, wearable only that day); 4×2 wear grid on the dashboard; replay any past day
 - 🖱 **Tray Quick Switch** — switch the current subject from the system tray; the tray icon color follows; overrides ambiguous entries
 - 🕐 **Daily Timeline** — horizontal 24h scrolling view, smart segment merging, manual reclassification of unclassified entries
 - 🌗 **Light / Dark Theme** — CSS-variable dual themes
@@ -209,7 +221,7 @@ The portable build is emitted as `release/澜山.exe` — no installation needed
 │                         │             │                         │
 │  ├─ ActivityWatch sync  │             │  ├─ Dashboard           │
 │  ├─ SQLite database     │             │  ├─ Heatmap             │
-│  ├─ System tray         │             │  ├─ Achievements        │
+│  ├─ System tray         │             │  ├─ Seal album          │
 │  ├─ Classification eng. │             │  ├─ Timeline            │
 │  ├─ Reminder service    │             │  ├─ Focus mode          │
 │  ├─ Focus overlay       │             │  └─ Settings            │
@@ -234,7 +246,7 @@ Classification engine: keyword match → tray override → fuzzy detection
 SQLite raw_events → merged_segments → daily_stats
         │
         ▼
-Frontend rendering (Recharts) / achievement checks / heatmap computation
+Frontend rendering (Recharts) / seal checks / heatmap computation
 ```
 
 #### Classification system
@@ -276,22 +288,34 @@ Skipped:         chat apps, file explorer, lock screen, etc. → not recorded
 - Manual makeup: click a heatmap cell → fill per subject in the dialog; filled cells show a dot and the tooltip reveals the source date
 - The surplus layer never modifies the raw stats; the gold glow at the end of a progress bar shows today's surplus for that subject
 
-#### Achievement system (38 total)
+#### Seal system (38 total)
 
-| Group | Achievements | Dimension |
+**Cumulative seals (16, permanent collection & wear)** — judged on data up to (and including) the current day:
+
+| Group | Seals | Condition |
 |-------|--------------|-----------|
 | 🌱 Cumulative | Sprout(30h) → Branch(100h) → Tree(250h) | total study time |
-| 🔥 Streak | 3-day → 7-day → 14-day | consecutive days |
-| ⚡ Physics / 📐 Math / 📖 English | Novice → Halfway → Master | per-subject totals |
-| 🌊 Single-day burst | Mountain(6h) → Summit(8h) | single-day total |
-| 🌄 Morning lark | Dawn(5d) → Sunrise(10d) → Habit(18d) | first study before 07:00 |
-| 🌙 Night owl | Lamp(5d) → Candle(10d) → Stars(18d) | last study after 22:00 |
-| 🎯 Deep focus | Focused(3d≥2h) → Absorbed(7d≥2h) → Trance(3d≥3h) | longest continuous session |
-| 🐴 Comeback | Dark horse(6h+) → Last stand(8h+) | low day followed by big day |
-| 💥 Subject crit | Physics/Math/English crit | single subject ≥ 4h in a day |
+| 🔥 Streak | 3-day → 7-day → 14-day | current consecutive days |
+| ⚡ Physics / 🔢 Math / 🔤 English | Novice → Halfway → Master | per-subject totals |
+| 🏆 Grand slam | Triple streak | 3 consecutive grand-slam days |
+
+**Daily seals (22, earned on the day the condition is met, wearable only that day; records kept per day and replayable)**:
+
+| Group | Seals | Condition (that day) |
+|-------|--------------|-----------|
+| 🌊 Single-day burst | Mountain(6h) → Summit(8h) → Grand slam | core subjects ≥ 6h / 8h / all three exceeded |
+| 🐴 Comeback | Dark horse(6h+) → Last stand(8h+) | previous day < 1h followed by a big day |
+| 💥 Subject crit | Physics/Math/English crit | single subject ≥ 4h |
 | ⚖️ Balanced day | Steady walker | all three met without exceeding |
+| 🌄 Morning lark | First light(≤7:30) → Morning light(≤7:00) → Daybreak(≤6:30) | start time that day |
+| 🌇 Night owl | Lamp(≥21:50) → Candle(≥22:20) → Stars(≥22:50) | end time that day |
+| 🎯 Deep focus | Focused(≥2h) → Absorbed(≥3h) → Trance(≥4h) | longest continuous session |
+| 🔥 Fanatic | Physics/Math/English fanatic | that subject exceeded (≥ 1.5× target) |
 | 🌗 Dawn-dusk | Dawn-dusk | morning + night on the same day |
-| 🎁 Hidden | Fanatic ×3 / Grand slam / Triple streak | revealed after unlock |
+
+- Wear: a **4×2 (8 slots) grid** at the bottom-left of the dashboard (square tiles with names); cumulative seals are permanently wearable, daily seals expire at midnight
+- Replay: the dashboard date navigation shows which seals were stamped on any past date, plus cumulative progress as of that date (same pattern as the timeline)
+- Icons: all 38 seals are **hand-drawn SVG line icons** (no emoji) — physics = pendulum → full Newton's cradle, math = line → parabola → sine wave, English = book + vocabulary 1000/2500/3500, night = 2/4/7 stars, crits/fanatics = subject character + bolt/flame
 
 #### Timeline merging rules
 

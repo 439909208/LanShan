@@ -1,7 +1,8 @@
 import { app, BrowserWindow, shell, ipcMain, dialog, screen } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
-import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, getAchievementProgress, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getPendingUnlocks, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, getRawTitleStats, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange, getMakeupFills, getMakeupAvailability, applyMakeup, undoMakeup } from './database'
+import { initDatabase, exportRules, importRules, closeDatabase, getSettings, setSetting, getDailyStats, getDailyBreakdown, getTotalSecondsToday, getConsecutiveDays, getMaxConsecutiveDays, getSubjectTotal, getTotalSecondsAllTime, getMergedSegments, getMergedSegmentDate, getWeekStats, getYearHeatmapData, reclassifySegment, reclassifyByTitle, reclassifyByTitleInRange, splitSegment, mergeAdjacentSegments, getDb, updateDailyStats, getClassificationRules, addClassificationRule, deleteClassificationRule, reclassifyRawEventsByKeyword, getRawTitleStats, SUBJECTS, CORE_SUBJECTS, Subject, getTraySubject, setTraySubject, getUTCRange, getMakeupFills, getMakeupAvailability, applyMakeup, undoMakeup } from './database'
+import { getSealDefs, getSealsOverview, getDailySealRecords, getNewSeals, setSealSlot, clearSealSlot, backfillDailySealHistory } from './seals'
 import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments, rebuildMergedSegmentsInRange } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
@@ -220,7 +221,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('get-makeup-availability', (_event, date: string) => getMakeupAvailability(date))
   ipcMain.handle('apply-makeup', (_event, date: string, subject: Subject) => applyMakeup(date, subject))
   ipcMain.handle('undo-makeup', (_event, date: string, subject: Subject) => undoMakeup(date, subject))
-  ipcMain.handle('get-achievements', () => getAchievementProgress())
+
+  // 刻章系统：定义 / 总览（含回放）/ 每日记录 / 佩戴位 / 新刻章轮询
+  ipcMain.handle('get-seal-defs', () => getSealDefs())
+  ipcMain.handle('get-seals-overview', (_event, date?: string) => getSealsOverview(date))
+  ipcMain.handle('get-daily-seal-records', (_event, date: string) => getDailySealRecords(date))
+  ipcMain.handle('get-new-seals', () => getNewSeals())
+  ipcMain.handle('set-seal-slot', (_event, slot: number, sealId: string) => setSealSlot(slot, sealId))
+  ipcMain.handle('clear-seal-slot', (_event, slot: number) => clearSealSlot(slot))
 
   // Window controls（无边框内置按钮）：最大化 = 铺满工作区（与常规软件一致，任务栏保留）
   ipcMain.handle('minimize-window', () => mainWindow?.minimize())
@@ -231,7 +239,6 @@ function registerIpcHandlers(): void {
       mainWindow?.maximize()
     }
   })
-  ipcMain.handle('get-new-unlocks', () => getPendingUnlocks())
   ipcMain.handle('sync-now', async () => {
     await syncFullToday()
     return true
@@ -310,11 +317,12 @@ function registerIpcHandlers(): void {
       filters: [{ name: 'JSON', extensions: ['json'] }]
     })
     if (!path) return false
-    const { getSettings, getAllDailyStats, getAchievementProgress } = require('./database')
+    const { getSettings } = require('./database')
+    const { getSealsOverview } = require('./seals')
     const data = JSON.stringify({
       exported_at: new Date().toISOString(),
       settings: getSettings(),
-      achievements: getAchievementProgress(),
+      seals: getSealsOverview(),
     }, null, 2)
     writeFileSync(path, data, 'utf-8')
     return true
@@ -325,6 +333,10 @@ function registerIpcHandlers(): void {
 app.whenReady().then(async () => {
   // Initialize database
   await initDatabase()
+
+  // 刻章系统 v5：首次升级回填全部历史日期的每日刻章记录
+  const backfilled = backfillDailySealHistory()
+  if (backfilled > 0) console.log('[seal] Backfilled', backfilled, 'daily seal records')
 
   // Register IPC handlers
   registerIpcHandlers()

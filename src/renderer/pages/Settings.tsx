@@ -51,6 +51,74 @@ export default function Settings(): React.ReactElement {
         </div>
       </div>
 
+      {/* 主页显示：数据字号 + 卡片边框（拖动滑块实时生效，返回主页即可看到效果） */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-base font-medium" style={{ color: 'var(--text-secondary)' }}>
+            🏠 主页显示
+          </h3>
+          <button
+            onClick={() => {
+              updateSetting('home_font_scale', 1)
+              updateSetting('home_border_width', 1)
+              updateSetting('home_border_radius', 16)
+              updateSetting('home_card_padding', 24)
+              const el = document.documentElement
+              el.style.setProperty('--dash-font-scale', '1')
+              el.style.setProperty('--dash-border-width', '1px')
+              el.style.setProperty('--dash-border-radius', '16px')
+              el.style.setProperty('--dash-card-padding', '24px')
+            }}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+            style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-light)' }}
+          >
+            恢复默认
+          </button>
+        </div>
+        <SliderRow
+          label="数据字号"
+          hint="主页数据卡、图表文字按比例缩放"
+          min={0.7} max={1.5} step={0.05}
+          value={parseFloat(settings.home_font_scale || '1') || 1}
+          format={(v) => `${Math.round(v * 100)}%`}
+          onChange={(v) => {
+            updateSetting('home_font_scale', Math.round(v * 100) / 100)
+            document.documentElement.style.setProperty('--dash-font-scale', String(Math.round(v * 100) / 100))
+          }}
+        />
+        <SliderRow
+          label="卡片边框粗细"
+          hint="所有页面卡片统一生效（边框、圆角、内边距）"
+          min={0} max={4} step={0.5}
+          value={parseFloat(settings.home_border_width || '1') || 1}
+          format={(v) => `${v}px`}
+          onChange={(v) => {
+            updateSetting('home_border_width', v)
+            document.documentElement.style.setProperty('--dash-border-width', `${v}px`)
+          }}
+        />
+        <SliderRow
+          label="卡片圆角"
+          min={0} max={28} step={2}
+          value={parseFloat(settings.home_border_radius || '16') || 16}
+          format={(v) => `${v}px`}
+          onChange={(v) => {
+            updateSetting('home_border_radius', v)
+            document.documentElement.style.setProperty('--dash-border-radius', `${v}px`)
+          }}
+        />
+        <SliderRow
+          label="卡片内边距"
+          min={8} max={40} step={2}
+          value={parseFloat(settings.home_card_padding || '24') || 24}
+          format={(v) => `${v}px`}
+          onChange={(v) => {
+            updateSetting('home_card_padding', v)
+            document.documentElement.style.setProperty('--dash-card-padding', `${v}px`)
+          }}
+        />
+      </div>
+
       {/* Summer Break Dates */}
       <div className="card">
         <h3 className="text-base font-medium mb-4" style={{ color: 'var(--text-secondary)' }}>
@@ -167,14 +235,14 @@ export default function Settings(): React.ReactElement {
         </h3>
         <button
           onClick={() => {
-            window.dispatchEvent(new CustomEvent('achievement-unlock', {
-              detail: ['total-30h']
+            window.dispatchEvent(new CustomEvent('seal-unlock', {
+              detail: { cumulative: ['total-30h'], daily: [] }
             }))
           }}
           className="px-5 py-2.5 rounded-xl text-sm font-medium transition-all"
           style={{ background: 'var(--accent)', color: 'white' }}
         >
-          🎉 测试成就弹窗
+          🎉 测试刻章弹窗
         </button>
       </div>
         </div>
@@ -650,6 +718,37 @@ function FocusScheduleCard({ settings, updateSetting }: {
       <p className="text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
         解析结果会替换当前时段列表；休息时段无需设置，软件只在学习时段自动进入/结束专注
       </p>
+    </div>
+  )
+}
+
+/** 设置滑块：标签 + 当前值 + range 输入（值变化即时回调，由调用方负责持久化与 CSS 变量写入） */
+function SliderRow({ label, hint, min, max, step, value, onChange, format }: {
+  label: string
+  hint?: string
+  min: number
+  max: number
+  step: number
+  value: number
+  onChange: (v: number) => void
+  format: (v: number) => string
+}): React.ReactElement {
+  return (
+    <div className="mb-4 last:mb-0">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-sm tabular-nums" style={{ color: 'var(--text-secondary)' }}>{format(value)}</span>
+      </div>
+      <input
+        type="range"
+        className="settings-slider"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+      />
+      {hint && <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{hint}</p>}
     </div>
   )
 }

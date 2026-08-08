@@ -48,9 +48,9 @@
 │       ├── index.css          # 全局样式 + CSS 变量
 │       ├── utils.ts           # 格式化、图标映射
 │       ├── pages/
-│       │   ├── Dashboard.tsx  # 主仪表盘：科目卡片、环形图、时间轴
+│       │   ├── Dashboard.tsx  # 主仪表盘：科目卡片、环形图、时间轴、刻章佩戴格
 │       │   ├── Settings.tsx   # 设置页：分类规则、补签范围、盈余统计
-│       │   ├── Achievements.tsx # 成就页
+│       │   ├── Seals.tsx      # 刻章册：累积/每日刻章收藏格 + 逐日回放
 │       │   ├── Focus.tsx      # 专注模式页：白名单管理、开始/结束
 │       │   ├── FocusOverlay.tsx # 专注覆盖层 UI（全屏倒计时）
 │       │   └── Heatmap.tsx    # 年度热力图
@@ -59,10 +59,12 @@
 │           ├── SubjectRingChart.tsx # SVG 环形图：5 科目分布
 │           ├── WeekTrendChart.tsx   # 近 7 天趋势柱状图
 │           ├── HeatmapGrid.tsx      # 年度热力图组件
-│           ├── AchievementList.tsx  # 成就列表
-│           ├── AchievementModal.tsx # 成就弹窗
-│           ├── AchievementToast.tsx # 成就解锁通知
-│           └── Toast.tsx           # 通用 Toast 通知
+│           ├── WearGrid.tsx         # 刻章佩戴位（4×2 八格，正方形带名字）
+│           ├── SealTile.tsx         # 刻章收藏格单格（印泥圆章）
+│           ├── SealIcon.tsx         # 38 枚刻章 SVG 图标库（线稿，currentColor 着色）
+│           ├── SealPicker.tsx       # 佩戴选择器
+│           ├── sealTypes.ts         # 刻章类型 + 格式化工具
+│           └── Toast.tsx           # 通用 Toast 通知（刻章盖印）
 │
 ├── electron.vite.config.ts    # 构建配置
 ├── package.json
@@ -98,7 +100,8 @@
 │  │  React App                                │    │
 │  │    ├─ Dashboard   → 仪表盘                │    │
 │  │    ├─ Settings    → 设置                  │    │
-│  │    └─ Achievements → 成就                 │    │
+│  │    ├─ Seals       → 刻章册                │    │
+│  │    └─ Focus       → 专注                  │    │
 │  │                                           │    │
 │  │  所有数据通过 window.lanshan.* IPC 获取    │    │
 │  └───────────────────────────────────────────┘    │
@@ -153,7 +156,9 @@ classification_rules  用户自定义的分类规则
 ├── match_field     TEXT            ← 'title' | 'app' | 'url' | 'all'
 └── priority        INTEGER         ← 优先级（越大越优先）
 
-achievements        成就系统
+achievements        累积刻章解锁状态（16 枚；进度实时计算）
+daily_seal_records  每日刻章逐日记录（回放数据源）
+seal_slots          佩戴位（4×2 八格；date=NULL=累积，date=获得日=每日）
 settings            键值对设置
 
 makeup_fills        补签记录（手动补签持久化）
@@ -244,7 +249,7 @@ ActivityWatch (localhost:5600)
 4. 从 raw_events 重新 SUM → updateDailyStats()
    （只更新 daily_stats，不改 merged_segments——避免覆盖手动拆分/合并）
 5. save() 持久化
-6. 检查成就解锁
+6. 刻章判定：累积刻章解锁新达标项 + 每日刻章按当天数据求值（只增不减）+ 跨天清理过期的每日佩戴
 ```
 
 ### 6.3 syncFullToday（全量同步）
@@ -479,7 +484,7 @@ Dashboard
 
 ### 10.3 自动刷新
 
-- **今天**：每 30 秒自动 `loadData()` + 检查成就解锁
+- **今天**：每 30 秒自动 `loadData()` + 轮询新刻章（`get-new-seals` → 盖印 toast）
 - **历史日期**：不自动刷新
 
 ---

@@ -11,13 +11,13 @@ import {
   Subject,
   MergedSegment,
   getTargetSeconds,
-  checkAndUnlockAchievements,
   getSetting,
   setSetting,
   getMergedSegments,
   getDailyStats,
   getUTCRange,
 } from './database'
+import { checkAndUnlockCumulativeSeals, evaluateDailySeals, clearExpiredDailySlots, todayStr } from './seals'
 
 let syncInterval: ReturnType<typeof setInterval> | null = null
 
@@ -129,11 +129,12 @@ export async function syncActivityWatch(): Promise<void> {
     }
   }
 
-  // Check for newly unlocked achievements
-  const newUnlocks = checkAndUnlockAchievements()
-  if (newUnlocks.length > 0) {
-    console.log('[achievement] New unlocks:', newUnlocks)
-  }
+  // 刻章判定：累积刻章解锁新达标项；每日刻章按当天数据求值（只增不减）；跨天清理过期的每日佩戴
+  const newSeals = checkAndUnlockCumulativeSeals()
+  const newDaily = evaluateDailySeals(todayStr())
+  clearExpiredDailySlots()
+  if (newSeals.length > 0) console.log('[seal] New cumulative seals:', newSeals)
+  if (newDaily.length > 0) console.log('[seal] New daily seals:', newDaily)
 
   save()
 }
