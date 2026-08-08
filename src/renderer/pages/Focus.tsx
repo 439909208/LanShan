@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { formatCountdown } from '../utils'
+import { formatCountdown, sortWhitelistByOrder } from '../utils'
 
 const PRESETS = [25, 45, 60]
 
@@ -19,8 +19,37 @@ export default function Focus(): React.ReactElement {
   // 窗口级锁定的内联编辑状态
   const [lockEdit, setLockEdit] = useState<string | null>(null)
   const [lockInput, setLockInput] = useState('')
+  // 已隐藏条目（主界面"隐藏"= 专注桌面不显示，白名单锁定规则保留）
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
+  // 专注桌面图标顺序（拖拽排序）
+  const [orderKeys, setOrderKeys] = useState<string[]>([])
   // 运行列表按进程分组 + 展开状态
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  /** 条目标识 key（与主进程/专注桌面一致：进程名|关键词） */
+  function entryKey(a: { name: string; titleMatch?: string }): string {
+    return a.name.toLowerCase() + '|' + (a.titleMatch || '').toLowerCase()
+  }
+
+  /** 隐藏：专注桌面不再显示（白名单保留，可"显示回来"） */
+  function hideEntry(a: FocusApp): void {
+    const next = [...hiddenKeys, entryKey(a)]
+    setHiddenKeys(new Set(next))
+    window.lanshan.setFocusHidden(next)
+  }
+
+  /** 显示回来 */
+  function showEntry(a: FocusApp): void {
+    const next = [...hiddenKeys].filter(k => k !== entryKey(a))
+    setHiddenKeys(new Set(next))
+    window.lanshan.setFocusHidden(next)
+  }
+
+  /** 切换浏览器条目的点击行为：🖥 显示回来（不新开页）/ 🔗 网址跳转 */
+  function toggleSwitchMode(a: FocusApp): void {
+    if (!state) return
+    updateWhitelist(state.whitelist.map(x => entryKey(x) === entryKey(a) ? { ...x, switchOnly: !x.switchOnly } : x))
+  }
 
   /** 窗口列表按进程名分组 */
   const groupedApps = (() => {
@@ -57,6 +86,8 @@ export default function Focus(): React.ReactElement {
 
   useEffect(() => {
     window.lanshan.getFocusState().then(setState)
+    window.lanshan.getFocusHidden().then(keys => setHiddenKeys(new Set(keys)))
+    window.lanshan.getFocusOrder().then(setOrderKeys)
     refreshRunningApps()
     const unsubscribe = window.lanshan.onFocusTick((tick) => {
       setState(prev => prev ? { ...prev, ...tick } : prev)
@@ -90,23 +121,28 @@ export default function Focus(): React.ReactElement {
     setLockInput(app.title || '')
   }
 
-  /** 确认窗口级锁定：仅标题包含关键词的窗口放行（同一进程可加多个不同关键词条目） */
-  function confirmLock(app: FocusApp): void {
+  /** 确认窗口级锁定：仅标题包含关键词的窗口放行（同一进程可加多个不同关键词条目）。
+   *  同时记录该窗口的网址：之后点专注桌面图标可直接跳转到这个页面（浏览器场景） */
+  async function confirmLock(app: FocusApp): Promise<void> {
     const keyword = lockInput.trim()
     if (!keyword) {
       setMessage('请输入标题关键词（例如：高考物理）')
       return
     }
     if (!state) return
+    const url = await window.lanshan.getWindowUrl(app)
     const next = [
       // 保留其他条目（包括同名不同关键词），仅去掉完全重复的
       ...state.whitelist.filter(a => !(a.name.toLowerCase() === app.name.toLowerCase() && (a.titleMatch || '') === keyword)),
-      { name: app.name, path: app.path, title: app.title, titleMatch: keyword },
+      // switchOnly 默认 true：点击图标只把浏览器调出来（不新开页面），可随时切回"网址跳转"
+      { name: app.name, path: app.path, title: app.title, titleMatch: keyword, url: url || undefined, switchOnly: true },
     ]
     updateWhitelist(next)
     setLockEdit(null)
     setLockInput('')
-    setMessage(`已锁定 ${displayName(app)}：仅标题包含「${keyword}」的窗口放行`)
+    setMessage(url
+      ? `已锁定 ${displayName(app)}：点击图标将显示浏览器（可在白名单里切换为网址跳转）`
+      : `已锁定 ${displayName(app)}：仅标题包含「${keyword}」的窗口放行（未获取到网址，将打开主界面）`)
   }
 
   function removeApp(name: string, titleMatch?: string): void {
@@ -170,6 +206,9 @@ export default function Focus(): React.ReactElement {
 
   const whitelist = state?.whitelist || []
   const selectedMin = customMin ? parseInt(customMin, 10) : preset
+  // 未隐藏 / 已隐藏（隐藏 = 专注桌面不显示，白名单保留），按专注桌面自定义顺序排列
+  const visibleWhitelist = sortWhitelistByOrder(whitelist.filter(a => !hiddenKeys.has(entryKey(a))), orderKeys)
+  const hiddenWhitelist = sortWhitelistByOrder(whitelist.filter(a => hiddenKeys.has(entryKey(a))), orderKeys)
 
   return (
     <div className="space-y-5 max-w-2xl">
@@ -253,9 +292,9 @@ export default function Focus(): React.ReactElement {
           📋 专注白名单
         </h3>
 
-        {/* 当前白名单 */}
-        <div className="flex flex-wrap gap-2 mb-5">
-          {whitelist.map(a => (
+        {/* 当前白名单（未隐藏） */}
+        <div className="flex flex-wrap gap-2 mb-3">
+          {visibleWhitelist.map(a => (
             <div
               key={a.name + (a.titleMatch || '')}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm"
@@ -267,13 +306,52 @@ export default function Focus(): React.ReactElement {
                   <span className="text-xs ml-1" style={{ color: 'var(--text-secondary)' }}>「{a.titleMatch}」</span>
                 )}
               </span>
-              <button onClick={() => removeApp(a.name, a.titleMatch)} className="text-xs" style={{ color: '#ef4444' }}>✕</button>
+              {a.url && (
+                <button
+                  onClick={() => toggleSwitchMode(a)}
+                  className="text-xs px-1 rounded transition-all hover:opacity-70"
+                  title={a.switchOnly
+                    ? `当前：显示回来（点击图标只调出浏览器，不新开页面）· ${a.url}`
+                    : `当前：网址跳转（点击图标直接打开该网址，可能新开页面）· ${a.url}`}
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  {a.switchOnly ? '🖥' : '🔗'}
+                </button>
+              )}
+              <button onClick={() => hideEntry(a)} className="text-xs" title="隐藏（专注桌面不显示，白名单保留，可显示回来）" style={{ color: 'var(--text-muted)' }}>🙈</button>
             </div>
           ))}
-          {whitelist.length === 0 && (
+          {visibleWhitelist.length === 0 && hiddenWhitelist.length === 0 && (
             <p className="text-xs py-1" style={{ color: 'var(--text-muted)' }}>白名单为空（开始专注时会自动加入澜山）</p>
           )}
         </div>
+
+        {/* 已隐藏（可显示回来） */}
+        {hiddenWhitelist.length > 0 && (
+          <div className="mb-5">
+            <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+              已隐藏 · 专注桌面不显示（白名单保留，点击 👁 显示回来）
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {hiddenWhitelist.map(a => (
+                <div
+                  key={a.name + (a.titleMatch || '') + '-hidden'}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm"
+                  style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)', border: '1px dashed var(--border-light)' }}
+                >
+                  <span className="font-medium">
+                    {a.titleMatch ? '🔒' : '📱'} {displayName(a)}
+                    {a.titleMatch && (
+                      <span className="text-xs ml-1" style={{ color: 'var(--text-muted)' }}>「{a.titleMatch}」</span>
+                    )}
+                  </span>
+                  <button onClick={() => showEntry(a)} className="text-xs" title="显示回来" style={{ color: 'var(--accent)' }}>👁 显示</button>
+                  <button onClick={() => removeApp(a.name, a.titleMatch)} className="text-xs" title="从白名单移除" style={{ color: '#ef4444' }}>✕</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* 手动添加 */}
         <div className="flex items-center gap-2 mb-2">
@@ -422,7 +500,7 @@ export default function Focus(): React.ReactElement {
           <li>🪟 非白名单软件只会被<b>盖住</b>，不会关闭——微信、QQ、下载都还在后台正常运行</li>
           <li>🔒 <b>窗口级锁定</b>：只有标题包含关键词的窗口放行（如 B 站只放行「高考物理」）</li>
           <li>🏠 <b>主界面规则</b>：点专注桌面条目 = 显示软件主界面（固定 30 秒），30 秒后自动覆盖</li>
-          <li>💥 <b>不匹配即结束</b>：检测到不匹配关键词的视频窗口，直接结束其进程（保留主界面）</li>
+          <li>💥 <b>不匹配即覆盖</b>：不匹配关键词的窗口一律盖住（不会关闭）；仅哔哩哔哩的不匹配视频窗口会被关闭</li>
           <li>🍃 白名单为空时自动包含澜山；澜山进程永远不会被拦截</li>
           <li>⏱ 中途崩溃/重启会恢复锁屏，时间没到专注桌面会重新弹出</li>
           <li>🔓 Esc 或 Ctrl+Shift+F10 随时可结束专注</li>

@@ -159,3 +159,55 @@ body {
 .toggle.active::after {
   transform: translateX(18px);
 }
+
+/* ─── Focus overlay（专注桌面）动画 ─── */
+
+/* 背景光斑：慢速漂移的柔和光团 */
+.focus-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  pointer-events: none;
+  will-change: transform;
+}
+
+@keyframes focus-blob-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(60px, -50px) scale(1.15); }
+  66% { transform: translate(-40px, 40px) scale(0.92); }
+}
+
+@keyframes focus-blob-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40% { transform: translate(-70px, 30px) scale(0.9); }
+  70% { transform: translate(50px, -60px) scale(1.18); }
+}
+
+@keyframes focus-blob-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.5; }
+  50% { transform: translate(30px, 60px) scale(1.25); opacity: 0.8; }
+}
+
+/* 倒计时数字的呼吸光效 */
+@keyframes focus-breathe {
+  0%, 100% { opacity: 0.92; }
+  50% { opacity: 1; }
+}
+
+.focus-breathe {
+  animation: focus-breathe 3.2s ease-in-out infinite;
+}
+
+/* 专注完成：粒子飘落 */
+@keyframes focus-particle {
+  0% { transform: translateY(-12vh) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(112vh) rotate(720deg); opacity: 0; }
+}
+
+.focus-particle {
+  position: absolute;
+  top: 0;
+  border-radius: 2px;
+  animation: focus-particle linear forwards;
+  pointer-events: none;
+}

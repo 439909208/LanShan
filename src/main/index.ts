@@ -5,7 +5,7 @@ import { initDatabase, exportRules, importRules, closeDatabase, getSettings, set
 import { createTray, refreshTray } from './tray'
 import { startSync, stopSync, syncActivityWatch, syncFullToday, rebuildMergedSegments, rebuildMergedSegmentsInRange } from './sync'
 import { getSubjectColor, getSubjectIcon } from './classifier'
-import { initFocus, shutdownFocus, setFocusHooks, startFocusSession, stopFocusSession, getFocusState, setFocusWhitelist, getRunningApps, resolveAppPath, getAppIcon, launchFocusApp, restoreTaskbarNow, FocusApp } from './focus'
+import { initFocus, shutdownFocus, setFocusHooks, startFocusSession, stopFocusSession, getFocusState, setFocusWhitelist, getFocusHidden, setFocusHidden, getFocusOrder, setFocusOrder, getFocusColor, setFocusColor, getRunningApps, resolveAppPath, getAppIcon, getWindowUrl, launchFocusApp, restoreTaskbarNow, FocusApp } from './focus'
 
 // 全局异常兜底：任何未捕获异常/未处理拒绝都不让主进程直接崩溃（曾导致专注中闪退、任务栏残留）
 process.on('uncaughtException', (err) => {
@@ -231,9 +231,16 @@ function registerIpcHandlers(): void {
     }
   })
   ipcMain.handle('set-focus-whitelist', (_event, entries: FocusApp[]) => setFocusWhitelist(entries))
+  ipcMain.handle('get-focus-hidden', () => getFocusHidden())
+  ipcMain.handle('set-focus-hidden', (_event, keys: string[]) => setFocusHidden(keys))
+  ipcMain.handle('get-focus-order', () => getFocusOrder())
+  ipcMain.handle('set-focus-order', (_event, keys: string[]) => setFocusOrder(keys))
+  ipcMain.handle('get-focus-color', () => getFocusColor())
+  ipcMain.handle('set-focus-color', (_event, color: string) => setFocusColor(color))
   ipcMain.handle('get-running-apps', () => getRunningApps())
   ipcMain.handle('resolve-app-path', (_event, name: string) => resolveAppPath(name))
   ipcMain.handle('get-app-icon', (_event, name: string, path: string) => getAppIcon(name, path))
+  ipcMain.handle('get-window-url', (_event, app: FocusApp) => getWindowUrl(app))
   ipcMain.handle('launch-focus-app', (_event, name: string, titleMatch?: string) => launchFocusApp(name, titleMatch))
   ipcMain.handle('quit-app', async () => {
     // 专注桌面的逃生口：结束专注 + 完全退出应用

@@ -6,6 +6,9 @@ const isDev = !app.isPackaged
 
 let overlayWindows: BrowserWindow[] = []
 
+/** 窗口四周各溢出屏幕 2px：把系统边框/DWM 边缘线推出屏幕外，屏幕内完全干净 */
+const EDGE = 2
+
 /**
  * 创建覆盖所有显示器的全屏「专注桌面」窗口（无边框、永久置顶、跳过任务栏）。
  * 已存在时直接复用。
@@ -17,14 +20,14 @@ export function createFocusOverlays(): BrowserWindow[] {
   }
   overlayWindows = screen.getAllDisplays().map((display) => {
     const win = new BrowserWindow({
-      x: display.bounds.x,
-      y: display.bounds.y,
-      width: display.bounds.width,
-      height: display.bounds.height,
+      // 四周各溢出 2px：边缘线（系统边框/DWM 边缘/阴影残留）被推出屏幕外
+      x: display.bounds.x - EDGE,
+      y: display.bounds.y - EDGE,
+      width: display.bounds.width + EDGE * 2,
+      height: display.bounds.height + EDGE * 2,
       frame: false,
-      // 真全屏（覆盖任务栏）：全屏窗口才会触发 Windows 自动隐藏任务栏。
-      // 注意不能设 resizable:false——Windows 上不可缩放窗口的全屏可能不生效。
-      fullscreen: true,
+      // 不进入 fullscreen 状态——借鉴壁纸引擎机制：普通窗口 + 尺寸被持续断言，
+      // 没有"全屏状态"可被 Windows 踢出，窗口永远物理覆盖整个屏幕
       show: false,
       skipTaskbar: true,
       title: '澜山 · 专注桌面',
@@ -36,12 +39,47 @@ export function createFocusOverlays(): BrowserWindow[] {
       },
     })
     win.setAlwaysOnTop(true, 'screen-saver')
-    // 兜底：创建选项没生效时再补一次（在窗口显示前调用，显示后由 Electron 保持全屏）
-    try {
-      win.setFullScreen(true)
-    } catch (err) {
-      console.error('[focus] 全屏设置失败:', err)
+    // 去掉窗口阴影（阴影会形成窗口边缘的视觉白线）
+    win.setHasShadow(false)
+    // 固定窗口：不可移动/缩放/最大化/最小化（防止拖动、贴边最大化导致变形）
+    win.setMovable(false)
+    win.setResizable(false)
+    win.setMaximizable(false)
+    win.setMinimizable(false)
+
+    // 强制物理全屏（含 2px 溢出，原生 setBounds，零 PowerShell 开销）：
+    // 任何原因导致尺寸/位置偏离 → 立即拉回所在显示器的物理全屏
+    const forceBounds = (): void => {
+      if (win.isDestroyed()) return
+      const b = screen.getDisplayMatching(win.getBounds()).bounds
+      const cur = win.getBounds()
+      const target = { x: b.x - EDGE, y: b.y - EDGE, width: b.width + EDGE * 2, height: b.height + EDGE * 2 }
+      if (cur.x !== target.x || cur.y !== target.y || cur.width !== target.width || cur.height !== target.height) {
+        win.setBounds(target)
+      }
     }
+    win.on('resize', forceBounds)
+    win.on('move', forceBounds)
+    // 去掉系统边框样式（WS_CAPTION/WS_THICKFRAME/WS_BORDER/WS_DLGFRAME）：
+    // 无边框窗口在 Windows 上仍残留 1px 系统边框（顶部最明显），去掉后边缘完全干净
+    win.once('ready-to-show', () => {
+      const buf = win.getNativeWindowHandle()
+      if (buf.length >= 4) {
+        const hwnd = buf.readUInt32LE(0)
+        void runPS(`Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class SW{[DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h,int i);[DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h,int i,int v);[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,int hAfter,int x,int y,int cx,int cy,uint f);}'
+$h=[IntPtr]::new(${hwnd})
+try{
+  $s=[SW]::GetWindowLong($h,-16)
+  $s=$s -band (-bnot (0x00C00000 -bor 0x00040000 -bor 0x00800000 -bor 0x00400000))
+  [void][SW]::SetWindowLong($h,-16,$s)
+  [void][SW]::SetWindowPos($h,[IntPtr]::Zero,0,0,0,0,0x0037)
+}catch{}`)
+      }
+    })
+    // 创建后立即断言几次（覆盖显示前后系统可能做的调整）
+    win.once('ready-to-show', forceBounds)
+    setTimeout(forceBounds, 300)
+    setTimeout(forceBounds, 1000)
     // 禁止用户关闭（Alt+F4 等）——专注桌面只能通过「结束专注/退出应用」离开
     win.on('close', (e) => {
       e.preventDefault()
@@ -78,6 +116,22 @@ export function destroyFocusOverlays(): void {
     if (!w.isDestroyed()) w.destroy()
   }
   overlayWindows = []
+}
+
+/**
+ * 强制所有专注桌面保持物理全屏（慢周期兜底，10 秒一次，原生 setBounds 开销可忽略）。
+ * 借鉴壁纸引擎：窗口尺寸由外部持续保证，不依赖任何"全屏状态"。带 2px 溢出。
+ */
+export function ensureOverlaysFullscreen(): void {
+  for (const w of overlayWindows) {
+    if (w.isDestroyed()) continue
+    const b = screen.getDisplayMatching(w.getBounds()).bounds
+    const cur = w.getBounds()
+    const target = { x: b.x - EDGE, y: b.y - EDGE, width: b.width + EDGE * 2, height: b.height + EDGE * 2 }
+    if (cur.x !== target.x || cur.y !== target.y || cur.width !== target.width || cur.height !== target.height) {
+      w.setBounds(target)
+    }
+  }
 }
 
 /** 判断某个窗口句柄是否属于专注桌面窗口（用于前台巡逻避免误判自己） */
@@ -147,7 +201,10 @@ export async function unraiseHwnd(hwndHex: string): Promise<void> {
 }
 
 function SET_TOP_SCRIPT(hwnd: number): string {
-  // SWP_NOSIZE(1) | SWP_NOMOVE(2) | SWP_NOACTIVATE(0x10)
+  // 只置顶不改尺寸（SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE）：
+  // 千万不能把窗口拉满物理屏幕——那会触发 Windows"全屏应用切换"检测，
+  // 把底层无缝全屏的专注桌面踢出全屏（变矮、底部露出桌面）。
+  // 白名单窗口保持原尺寸浮在专注桌面之上，专注桌面全屏兜底，永远不会露桌面。
   return `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class Z{[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,int hAfter,int x,int y,int cx,int cy,uint f);}'
 $h=[IntPtr]::new(${hwnd})
 [void][Z]::SetWindowPos($h,[IntPtr]::new(-1),0,0,0,0,0x0013)`

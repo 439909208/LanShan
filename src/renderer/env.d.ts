@@ -7,6 +7,10 @@ interface FocusApp {
   title?: string
   /** 窗口标题关键词：设置后仅当前台窗口标题包含该关键词时才放行（窗口级锁定） */
   titleMatch?: string
+  /** 锁窗口时记录的网址：点击图标时直接用浏览器导航到该地址（精确跳转） */
+  url?: string
+  /** 仅显示模式：点击图标只把浏览器/窗口调出来（不导航新开页面） */
+  switchOnly?: boolean
 }
 
 /** 专注状态 */
@@ -74,9 +78,16 @@ interface LanshanApi {
   startFocus: (durationMin: number) => Promise<boolean>
   stopFocus: () => Promise<void>
   setFocusWhitelist: (entries: FocusApp[]) => Promise<void>
+  getFocusHidden: () => Promise<string[]>
+  setFocusHidden: (keys: string[]) => Promise<void>
+  getFocusOrder: () => Promise<string[]>
+  setFocusOrder: (keys: string[]) => Promise<void>
+  getFocusColor: () => Promise<string>
+  setFocusColor: (color: string) => Promise<void>
   getRunningApps: () => Promise<FocusApp[]>
   resolveAppPath: (name: string) => Promise<string>
   getAppIcon: (name: string, path: string) => Promise<string>
+  getWindowUrl: (app: FocusApp) => Promise<string>
   launchFocusApp: (name: string, titleMatch?: string) => Promise<void>
   quitApp: () => Promise<void>
   onFocusTick: (cb: (data: FocusTick) => void) => () => void

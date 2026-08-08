@@ -13,3 +13,5 @@ release/
 
 # Local tooling
 .zcode/
+lanshan.log
+bili-monitor-*.log

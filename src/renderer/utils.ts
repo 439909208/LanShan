@@ -88,3 +88,21 @@ export function formatCountdown(seconds: number): string {
   const ss = String(sec).padStart(2, '0')
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
 }
+
+/** 白名单条目标识 key（进程名|关键词，与主进程一致） */
+export function focusEntryKey(a: { name: string; titleMatch?: string }): string {
+  return a.name.toLowerCase() + '|' + (a.titleMatch || '').toLowerCase()
+}
+
+/**
+ * 按专注桌面自定义顺序排序白名单（拖拽排序持久化）。
+ * 未在顺序列表中的条目排在后面，保持原相对顺序。
+ */
+export function sortWhitelistByOrder<T extends { name: string; titleMatch?: string }>(items: T[], orderKeys: string[]): T[] {
+  const idx = new Map(orderKeys.map((k, i) => [k, i]))
+  return [...items].sort((a, b) => {
+    const ia = idx.has(focusEntryKey(a)) ? idx.get(focusEntryKey(a))! : Number.MAX_SAFE_INTEGER
+    const ib = idx.has(focusEntryKey(b)) ? idx.get(focusEntryKey(b))! : Number.MAX_SAFE_INTEGER
+    return ia - ib
+  })
+}
